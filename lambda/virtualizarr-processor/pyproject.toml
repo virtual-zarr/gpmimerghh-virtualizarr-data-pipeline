@@ -4,8 +4,12 @@ version = "0.1.0"
 description = "Module for ingesting virtualizarr data to Icechunk"
 requires-python = ">=3.11"
 dependencies = [
-    "icechunk",
-    "virtualizarr",
+    "earthaccess",
+    "h5py",
+    "icechunk>=2.0.5",
+    "virtualizarr>=2.6.1",
+    "obspec-utils",
+    "cftime"
 ]
 
 [build-system]
