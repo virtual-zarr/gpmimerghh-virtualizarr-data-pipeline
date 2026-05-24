@@ -48,6 +48,14 @@ Virtualizarr Data Pipelines uses a strongly-typed [settings module](./cdk/settin
 Here is where you can specify things like the SNS topic you created to feed your
 queue.  Or the S3 bucket where your archival dataset lives.
 
+#### Icechunk bucket settings
+There are two bucket-related settings that control where the Icechunk store is written:
+
+- **`ICECHUNK_BUCKET_NAME`** — the name of a new S3 bucket CDK will create for the store (default: `icechunk-outuput`).
+- **`ICECHUNK_BUCKET`** — the name of an **existing** S3 bucket to use instead. When this is set, CDK will reference the bucket rather than create it.
+
+If you already have a bucket (e.g. `nasa-eodc-public`), set `ICECHUNK_BUCKET=nasa-eodc-public` in your `.env` file to avoid the `already exists` error on deploy.
+
 ### Project commands :hammer:
 #### To set up the development environment
 ```
