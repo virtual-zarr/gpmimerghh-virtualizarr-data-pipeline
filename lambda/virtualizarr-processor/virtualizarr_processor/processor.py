@@ -69,6 +69,33 @@ def _timestamp_from_url(file_url: str) -> datetime:
     return datetime.strptime(date_part + start_part[1:], "%Y%m%d%H%M%S")
 
 class Processor:
+    region: str
+    prefix: str
+    bucket: str | None
+    storage: icechunk.Storage | None
+
+    def __init__(
+        self,
+        region: str = 'us-west-2',
+        bucket: str | None = None,
+        prefix: str = "gpmimerg_hh_07",
+    ) -> None:
+        self.region = region
+        self.bucket = bucket or os.getenv("ICECHUNK_BUCKET") or None
+        self.prefix = (prefix or os.getenv("ICECHUNK_PREFIX", "gpmimerg_hh_07")).strip("/")
+        self.storage = self._get_storage()
+
+    def _get_storage(self) -> icechunk.Storage:
+        if not self.bucket:
+            return icechunk.local_filesystem_storage(path=self.prefix)
+
+        return icechunk.s3_storage(
+            bucket=self.bucket,
+            prefix=self.prefix or None,
+            region=self.region,
+            from_env=True,
+        )
+
     def initialize_repo(
         self,
         repo: icechunk.Repository | None = None,
@@ -101,8 +128,7 @@ class Processor:
             Chunk size along the time axis for the native ``time`` coord.
         """
         if repo is None:
-            repo = helpers.open_or_create_repo()
-
+            repo = helpers.open_or_create_repo(storage=self.storage)
 
         if _is_initialized(repo):
             print("Repo already initialized; skipping template write.")

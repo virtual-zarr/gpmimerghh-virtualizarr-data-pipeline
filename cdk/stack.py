@@ -123,6 +123,8 @@ class VirtualizarrSqsStack(Stack):
             memory_size=2048,
             environment={
                 'EARTHDATA_SECRET_ARN': settings.EARTHDATA_SECRET_ARN,
+                "ICECHUNK_BUCKET": self.icechunk_bucket.bucket_name,
+                "ICECHUNK_PREFIX": settings.ICECHUNK_PREFIX,
             }
         )
 
@@ -167,6 +169,8 @@ class VirtualizarrSqsStack(Stack):
             memory_size=2048,
             environment={
                 'EARTHDATA_SECRET_ARN': settings.EARTHDATA_SECRET_ARN,
+                "ICECHUNK_BUCKET": self.icechunk_bucket.bucket_name,
+                "ICECHUNK_PREFIX": settings.ICECHUNK_PREFIX,
             }
         )
 

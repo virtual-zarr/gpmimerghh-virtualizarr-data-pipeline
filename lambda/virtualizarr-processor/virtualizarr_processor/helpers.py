@@ -160,8 +160,7 @@ def get_container_credentials() -> Dict[str, icechunk.AnyCredential]:
 
 def open_or_create_repo(
     *,
-    storage: "icechunk.Storage | None" = None,
-    storage_path: str = "gpmimerg_hh_07",
+    storage: "icechunk.Storage",
     manifest_split_size: int = 48 * 365,
     virtual_chunk_url: str | None = None,
     virtual_chunk_store: "icechunk.ObjectStoreConfig | None" = None,
@@ -196,9 +195,6 @@ def open_or_create_repo(
 
     if virtual_chunk_store is None:
         virtual_chunk_store = icechunk.s3_store(region="us-west-2")
-
-    if storage is None:
-        storage = icechunk.local_filesystem_storage(path=storage_path)
 
     if virtual_chunk_credentials is None:
         virtual_chunk_credentials = get_container_credentials()

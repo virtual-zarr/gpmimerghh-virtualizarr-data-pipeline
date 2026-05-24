@@ -1,4 +1,5 @@
 from typing import Any
+import os
 
 from aws_lambda_powertools import Logger, Tracer
 from aws_lambda_powertools.utilities.typing import LambdaContext
@@ -12,8 +13,12 @@ tracer = Tracer()
 @tracer.capture_lambda_handler
 def handler(event: Any, context: LambdaContext) -> None:
     try:
-        virtualizarr_processor = Processor()
-        # TODO(aimee): pass s3 storage configuration here
+        bucket = os.getenv("ICECHUNK_BUCKET", "")
+        prefix = os.getenv("ICECHUNK_PREFIX", "")
+        virtualizarr_processor = Processor(
+            bucket=bucket,
+            prefix=prefix
+        )
         virtualizarr_processor.initialize_repo()
         logger.info("Icechunk initialized")
     except Exception as e:
