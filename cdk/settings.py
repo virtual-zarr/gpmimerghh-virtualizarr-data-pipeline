@@ -18,7 +18,7 @@ class StackSettings(BaseSettings):
     STACK_NAME: str = "virtualizarr-data-pipelines"
     STAGE: Literal["dev", "prod"]
     ACCOUNT_ID: str
-    ACCOUNT_REGION: str = "us-east-1"
+    ACCOUNT_REGION: str = "us-west-2"
     ICECHUNK_BUCKET_NAME: str = "icechunk-outuput"
     ICECHUNK_BUCKET: str | None = None
     DATA_BUCKET_NAME: str | None = None
@@ -26,6 +26,7 @@ class StackSettings(BaseSettings):
     SNS_TOPIC: str | None = None
     MAX_CONCURRENCY: int = 50
     SQS_BATCH_SIZE: int = 10
+    EARTHDATA_SECRET_ARN: str = None
 
     # Freguency in days to run garbage collection.
     GARBAGE_COLLECTION_FREQUENCY: int | None = None

@@ -48,6 +48,28 @@ Virtualizarr Data Pipelines uses a strongly-typed [settings module](./cdk/settin
 Here is where you can specify things like the SNS topic you created to feed your
 queue.  Or the S3 bucket where your archival dataset lives.
 
+#### NASA Earthdata credentials
+
+If your data requires NASA Earthdata authentication, store the credentials in AWS Secrets Manager rather than as plain text in `.env`.
+
+**Create the secret** (once, before deploying):
+
+```bash
+aws secretsmanager create-secret \
+  --name "<your-stack-name>/earthdata-credentials" \
+  --description "NASA Earthdata credentials for the virtualizarr pipeline" \
+  --secret-string '{"username":"<your-username>","password":"<your-password>"}' \
+  --region <your-region>
+```
+
+Then set `EARTHDATA_SECRET_ARN` in your `.env` file to the ARN returned by the command above:
+
+```
+EARTHDATA_SECRET_ARN=arn:aws:secretsmanager:<region>:<account-id>:secret:<your-stack-name>/earthdata-credentials-<suffix>
+```
+
+The Lambda functions fetch the secret at startup and set the credentials as environment variables, so `earthaccess` and the Earthdata S3 credential provider work without any further changes.
+
 #### Icechunk bucket settings
 There are two bucket-related settings that control where the Icechunk store is written:
 

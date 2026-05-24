@@ -37,6 +37,9 @@ from aws_cdk import (
     aws_sns_subscriptions as subscriptions,
 )
 from aws_cdk import (
+    aws_secretsmanager as secretsmanager,
+)
+from aws_cdk import (
     aws_sqs as sqs,
 )
 from aws_cdk import custom_resources as cr
@@ -101,6 +104,12 @@ class VirtualizarrSqsStack(Stack):
                 )
             )
 
+        self.earthdata_secret = secretsmanager.Secret.from_secret_complete_arn(
+            self,
+            "EarthdataSecret",
+            secret_complete_arn=settings.EARTHDATA_SECRET_ARN,
+        )
+
         self.process_messages_lambda = _lambda.DockerImageFunction(
             self,
             f"{settings.STACK_NAME}-process_messages_lambda",
@@ -112,8 +121,12 @@ class VirtualizarrSqsStack(Stack):
             architecture=_lambda.Architecture.X86_64,
             timeout=Duration.minutes(5),
             memory_size=2048,
+            environment={
+                'EARTHDATA_SECRET_ARN': settings.EARTHDATA_SECRET_ARN,
+            }
         )
 
+        self.earthdata_secret.grant_read(self.process_messages_lambda)
         self.queue.grant_consume_messages(self.process_messages_lambda)
 
         # Grant Lambda permissions to read from S3 (for processing HRRR files)
@@ -152,8 +165,12 @@ class VirtualizarrSqsStack(Stack):
             architecture=_lambda.Architecture.X86_64,
             timeout=Duration.minutes(5),
             memory_size=2048,
+            environment={
+                'EARTHDATA_SECRET_ARN': settings.EARTHDATA_SECRET_ARN,
+            }
         )
 
+        self.earthdata_secret.grant_read(self.initialize_icechunk_lambda)
         self.icechunk_bucket.grant_read_write(self.initialize_icechunk_lambda)
 
         if settings.ICECHUNK_BUCKET:
@@ -170,9 +187,12 @@ class VirtualizarrSqsStack(Stack):
                     },
                     physical_resource_id=cr.PhysicalResourceId.of("trigger-once-id"),
                 ),
-                policy=cr.AwsCustomResourcePolicy.from_sdk_calls(
-                    resources=[self.initialize_icechunk_lambda.function_arn]
-                ),
+                policy=cr.AwsCustomResourcePolicy.from_statements([
+                    iam.PolicyStatement(
+                        actions=["lambda:InvokeFunction"],
+                        resources=[self.initialize_icechunk_lambda.function_arn],
+                    )
+                ]),
             )
 
             self.trigger.node.add_dependency(self.initialize_icechunk_lambda)

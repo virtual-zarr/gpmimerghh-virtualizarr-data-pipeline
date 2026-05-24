@@ -13,6 +13,7 @@ tracer = Tracer()
 def handler(event: Any, context: LambdaContext) -> None:
     try:
         virtualizarr_processor = Processor()
+        # TODO(aimee): pass s3 storage configuration here
         virtualizarr_processor.initialize_repo()
         logger.info("Icechunk initialized")
     except Exception as e:

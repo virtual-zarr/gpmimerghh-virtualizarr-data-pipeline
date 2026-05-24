@@ -1,6 +1,9 @@
 import icechunk
 from virtualizarr import open_virtual_dataset
 from virtualizarr.parsers import HDFParser
+import boto3
+import json
+import os
 from typing import Dict
 from datetime import datetime
 from obspec_utils.registry import ObjectStoreRegistry
@@ -11,6 +14,21 @@ from datetime import datetime, timedelta
 from obstore.auth.earthdata import NasaEarthdataCredentialProvider
 
 BASE = "s3://gesdisc-cumulus-prod-protected/GPM_L3/GPM_3IMERGHH.07"
+
+
+def _load_earthdata_credentials() -> None:
+    """Fetch Earthdata credentials from Secrets Manager and set as env vars."""
+    secret_arn = os.environ.get("EARTHDATA_SECRET_ARN")
+    if not secret_arn:
+        return
+    client = boto3.client("secretsmanager")
+    response = client.get_secret_value(SecretId=secret_arn)
+    creds = json.loads(response["SecretString"])
+    os.environ["EARTHDATA_USERNAME"] = creds["username"]
+    os.environ["EARTHDATA_PASSWORD"] = creds["password"]
+
+
+_load_earthdata_credentials()
 
 # Auxiliary variables that we never want in the analysis-ready cube. The
 # `Grid` group plus these dimension/bounds variables are dropped on *every*
@@ -32,9 +50,6 @@ T0 = datetime(1998, 1, 1)
 T_MINUS_1 = datetime(2025, 10, 1)
 N_TIME = (T_MINUS_1 - T0).days * 48
 
-# Since no NASA Earthdata credentials are specified in this example,
-# environment variables or netrc will be used to locate them in order to
-# obtain S3 credentials from the URL.
 cp = NasaEarthdataCredentialProvider(CREDENTIALS_URL)
 
 def url_for(t: datetime) -> str:
