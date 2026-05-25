@@ -1,17 +1,18 @@
-import icechunk
-from virtualizarr import open_virtual_dataset
-from virtualizarr.parsers import HDFParser
-import boto3
 import json
 import os
-from typing import Dict
-from datetime import datetime
-from obspec_utils.registry import ObjectStoreRegistry
-from obstore.store import S3Store
-import earthaccess
-
 from datetime import datetime, timedelta
+from typing import Dict
+
+import boto3
+import earthaccess
+import icechunk
+import xarray as xr
+from obspec_utils.registry import ObjectStoreRegistry
 from obstore.auth.earthdata import NasaEarthdataCredentialProvider
+from obstore.store import S3Store
+from virtualizarr import open_virtual_dataset
+from virtualizarr.parsers import HDFParser
+
 
 def _load_earthdata_credentials() -> None:
     """Fetch Earthdata credentials from Secrets Manager and set as env vars."""
@@ -27,8 +28,6 @@ def _load_earthdata_credentials() -> None:
     os.environ["EARTHDATA_PASSWORD"] = creds["password"]
 
 
-_load_earthdata_credentials()
-
 # Auxiliary variables that we never want in the analysis-ready cube. The
 # `Grid` group plus these dimension/bounds variables are dropped on *every*
 # read.
@@ -39,9 +38,10 @@ AUX_DROP_VARIABLES = ["Intermediate", "nv", "lonv", "latv"]
 # are dropped because they're already written in the store.
 COORD_VARIABLES = ["time", "lon", "lat", "time_bnds", "lon_bnds", "lat_bnds"]
 
-BUCKET = 'gesdisc-cumulus-prod-protected'
-STORE_PREFIX = f's3://{BUCKET}/GPM_L3/GPM_3IMERGHH.07/'
-EXAMPLE_LINK = f"{STORE_PREFIX}/2025/273/3B-HHR.MS.MRG.3IMERG.20250930-S233000-E235959.1410.V07B.HDF5"
+BUCKET = "gesdisc-cumulus-prod-protected"
+STORE_PREFIX = f"s3://{BUCKET}/GPM_L3/GPM_3IMERGHH.07/"
+FILE_PATH = "2025/273/3B-HHR.MS.MRG.3IMERG.20250930-S233000-E235959.1410.V07B.HDF5"
+EXAMPLE_LINK = f"{STORE_PREFIX}/{FILE_PATH}"
 CREDENTIALS_URL = "https://data.gesdisc.earthdata.nasa.gov/s3credentials"
 
 # TIME VARS
@@ -49,7 +49,6 @@ T0 = datetime(1998, 1, 1)
 T_MINUS_1 = datetime(2025, 10, 1)
 N_TIME = (T_MINUS_1 - T0).days * 48
 
-cp = NasaEarthdataCredentialProvider(CREDENTIALS_URL)
 
 def url_for(t: datetime) -> str:
     end = t + timedelta(minutes=29, seconds=59)
@@ -57,8 +56,11 @@ def url_for(t: datetime) -> str:
     minutes_since = (t - midnight) // timedelta(minutes=1)
     name = (
         "3B-HHR.MS.MRG.3IMERG."
-        + t.strftime("%Y%m%d") + "-S" + t.strftime("%H%M%S")
-        + "-E" + end.strftime("%H%M%S")
+        + t.strftime("%Y%m%d")
+        + "-S"
+        + t.strftime("%H%M%S")
+        + "-E"
+        + end.strftime("%H%M%S")
         + f".{minutes_since:04d}.V07B.HDF5"
     )
     return f"{STORE_PREFIX}/{t.year:04d}/{t.strftime('%j')}/{name}"
@@ -66,6 +68,8 @@ def url_for(t: datetime) -> str:
 
 def _default_s3_registry(data_url: str) -> ObjectStoreRegistry:
     """Build the production GES DISC S3 registry for ``data_url``."""
+    _load_earthdata_credentials()
+    cp = NasaEarthdataCredentialProvider(CREDENTIALS_URL)
     store = S3Store.from_url(STORE_PREFIX, credential_provider=cp)
     return ObjectStoreRegistry({f"s3://{BUCKET}": store})
 
@@ -76,8 +80,9 @@ def _open_vds(
     drop_variables: list[str],
     loadable_variables: list[str],
     registry: ObjectStoreRegistry | None = None,
-):
-    """Internal: open a granule with explicit drop_variables / loadable_variables.
+) -> xr.Dataset:
+    """
+    Open a granule with explicit drop_variables / loadable_variables.
 
     All public openers below are thin wrappers around this so the parser /
     registry / credential setup lives in exactly one place. Tests can pass
@@ -99,11 +104,12 @@ def open_vds_with_coords(
     data_url: str,
     *,
     registry: ObjectStoreRegistry | None = None,
-):
-    """Stage 0 / exploratory: returns a vds with coords + bounds loaded natively.
+) -> xr.Dataset:
+    """
+    Returns a vds with coords + bounds loaded natively.
 
     Use this when you need to *read* the coordinate values — e.g. to extract
-    time/lon/lat into the Stage 0 template, or when poking at a granule in a
+    time/lon/lat into the template, or when poking at a granule in a
     notebook. Coords come back as concrete numpy arrays; data variables come
     back as VirtualiZarr ManifestArrays.
     """
@@ -119,7 +125,7 @@ def open_vds_data_only(
     data_url: str,
     *,
     registry: ObjectStoreRegistry | None = None,
-):
+) -> xr.Dataset:
     """Stage 1 / region writes: returns a vds with **only** the 4 data variables.
 
     Every coordinate and bounds variable is added to `drop_variables` so the
@@ -134,7 +140,8 @@ def open_vds_data_only(
         registry=registry,
     )
 
-def get_icechunk_creds(daac: str = 'GES_DISC') -> icechunk.S3StaticCredentials:
+
+def get_icechunk_creds(daac: str = "GES_DISC") -> icechunk.S3StaticCredentials:
     """Get refreshable earthdata credentials for icechunk."""
     auth = earthaccess.login()
     if not auth.authenticated:
@@ -147,7 +154,8 @@ def get_icechunk_creds(daac: str = 'GES_DISC') -> icechunk.S3StaticCredentials:
         session_token=creds["sessionToken"],
     )
 
-def get_container_credentials() -> Dict[str, icechunk.AnyCredential]:
+
+def get_container_credentials() -> icechunk.AnyCredential:
     """Get container credentials for icechunk."""
     return icechunk.containers_credentials(
         {
@@ -157,6 +165,7 @@ def get_container_credentials() -> Dict[str, icechunk.AnyCredential]:
         }
     )
 
+
 def open_or_create_repo(
     *,
     storage: "icechunk.Storage",
@@ -165,7 +174,7 @@ def open_or_create_repo(
     virtual_chunk_store: "icechunk.ObjectStoreConfig | None" = None,
     virtual_chunk_credentials: "Dict[str, icechunk.AnyCredential] | None" = None,
     save_config: bool = False,
-):
+) -> icechunk.Repository:
     """Open or create the GPM_3IMERGHH icechunk repo.
     Parameters
     ----------
@@ -207,20 +216,32 @@ def open_or_create_repo(
     except icechunk.IcechunkError:
         config = icechunk.RepositoryConfig.default()
         time_split_size = {
-            icechunk.config.ManifestSplitDimCondition.DimensionName("time"): manifest_split_size
+            icechunk.config.ManifestSplitDimCondition.DimensionName(
+                "time"
+            ): manifest_split_size
         }
         config.manifest = icechunk.ManifestConfig(
-            splitting=icechunk.ManifestSplittingConfig.from_dict({
-                icechunk.config.ManifestSplitCondition.name_matches("precipitation"): time_split_size,
-                icechunk.config.ManifestSplitCondition.name_matches("randomError"): time_split_size,
-                icechunk.config.ManifestSplitCondition.name_matches("precipitationQualityIndex"): time_split_size,
-                icechunk.config.ManifestSplitCondition.name_matches("probabilityLiquidPrecipitation"): time_split_size,
-            }),
+            splitting=icechunk.ManifestSplittingConfig.from_dict(
+                {
+                    icechunk.config.ManifestSplitCondition.name_matches(
+                        "precipitation"
+                    ): time_split_size,
+                    icechunk.config.ManifestSplitCondition.name_matches(
+                        "randomError"
+                    ): time_split_size,
+                    icechunk.config.ManifestSplitCondition.name_matches(
+                        "precipitationQualityIndex"
+                    ): time_split_size,
+                    icechunk.config.ManifestSplitCondition.name_matches(
+                        "probabilityLiquidPrecipitation"
+                    ): time_split_size,
+                }
+            ),
             preload=icechunk.ManifestPreloadConfig(max_total_refs=0),
         )
         config.set_virtual_chunk_container(
             icechunk.VirtualChunkContainer(virtual_chunk_url, virtual_chunk_store)
-        )        
+        )
         repo = icechunk.Repository.create(
             storage=storage,
             config=config,

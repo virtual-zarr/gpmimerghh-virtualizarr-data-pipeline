@@ -31,13 +31,13 @@ from aws_cdk import (
     aws_s3 as s3,
 )
 from aws_cdk import (
+    aws_secretsmanager as secretsmanager,
+)
+from aws_cdk import (
     aws_sns as sns,
 )
 from aws_cdk import (
     aws_sns_subscriptions as subscriptions,
-)
-from aws_cdk import (
-    aws_secretsmanager as secretsmanager,
 )
 from aws_cdk import (
     aws_sqs as sqs,
@@ -122,10 +122,10 @@ class VirtualizarrSqsStack(Stack):
             timeout=Duration.minutes(5),
             memory_size=2048,
             environment={
-                'EARTHDATA_SECRET_ARN': settings.EARTHDATA_SECRET_ARN,
+                "EARTHDATA_SECRET_ARN": settings.EARTHDATA_SECRET_ARN,
                 "ICECHUNK_BUCKET": self.icechunk_bucket.bucket_name,
                 "ICECHUNK_PREFIX": settings.ICECHUNK_PREFIX,
-            }
+            },
         )
 
         self.earthdata_secret.grant_read(self.process_messages_lambda)
@@ -168,10 +168,10 @@ class VirtualizarrSqsStack(Stack):
             timeout=Duration.minutes(5),
             memory_size=2048,
             environment={
-                'EARTHDATA_SECRET_ARN': settings.EARTHDATA_SECRET_ARN,
+                "EARTHDATA_SECRET_ARN": settings.EARTHDATA_SECRET_ARN,
                 "ICECHUNK_BUCKET": self.icechunk_bucket.bucket_name,
                 "ICECHUNK_PREFIX": settings.ICECHUNK_PREFIX,
-            }
+            },
         )
 
         self.earthdata_secret.grant_read(self.initialize_icechunk_lambda)
@@ -191,12 +191,14 @@ class VirtualizarrSqsStack(Stack):
                     },
                     physical_resource_id=cr.PhysicalResourceId.of("trigger-once-id"),
                 ),
-                policy=cr.AwsCustomResourcePolicy.from_statements([
-                    iam.PolicyStatement(
-                        actions=["lambda:InvokeFunction"],
-                        resources=[self.initialize_icechunk_lambda.function_arn],
-                    )
-                ]),
+                policy=cr.AwsCustomResourcePolicy.from_statements(
+                    [
+                        iam.PolicyStatement(
+                            actions=["lambda:InvokeFunction"],
+                            resources=[self.initialize_icechunk_lambda.function_arn],
+                        )
+                    ]
+                ),
             )
 
             self.trigger.node.add_dependency(self.initialize_icechunk_lambda)
