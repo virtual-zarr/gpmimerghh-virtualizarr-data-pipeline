@@ -167,6 +167,7 @@ def open_or_create_repo(
     virtual_chunk_url: str | None = None,
     virtual_chunk_store: "icechunk.ObjectStoreConfig | None" = None,
     virtual_chunk_credentials: "Dict[str, icechunk.AnyCredential] | None" = None,
+    save_config: bool = False,
 ):
     """Open or create the GPM_3IMERGHH icechunk repo.
     Parameters
@@ -201,27 +202,33 @@ def open_or_create_repo(
     if virtual_chunk_credentials is None:
         virtual_chunk_credentials = get_container_credentials()
 
-    config = icechunk.RepositoryConfig.default()
-    time_split_size = {
-        icechunk.config.ManifestSplitDimCondition.DimensionName("time"): manifest_split_size
-    }
-    config.manifest = icechunk.ManifestConfig(
-        splitting=icechunk.ManifestSplittingConfig.from_dict({
-            icechunk.config.ManifestSplitCondition.name_matches("precipitation"): time_split_size,
-            icechunk.config.ManifestSplitCondition.name_matches("randomError"): time_split_size,
-            icechunk.config.ManifestSplitCondition.name_matches("precipitationQualityIndex"): time_split_size,
-            icechunk.config.ManifestSplitCondition.name_matches("probabilityLiquidPrecipitation"): time_split_size,
-        }),
-        preload=icechunk.ManifestPreloadConfig(max_total_refs=0),
-    )
-    config.set_virtual_chunk_container(
-        icechunk.VirtualChunkContainer(virtual_chunk_url, virtual_chunk_store)
-    )
-
-    repo = icechunk.Repository.open_or_create(
-        config=config,
-        storage=storage,
-        authorize_virtual_chunk_access=virtual_chunk_credentials,
-    )
-    repo.save_config()
+    try:
+        repo = icechunk.Repository.open(
+            storage=storage,
+            authorize_virtual_chunk_access=virtual_chunk_credentials,
+        )
+    except icechunk.RepositoryDoesntExist:
+        config = icechunk.RepositoryConfig.default()
+        time_split_size = {
+            icechunk.config.ManifestSplitDimCondition.DimensionName("time"): manifest_split_size
+        }
+        config.manifest = icechunk.ManifestConfig(
+            splitting=icechunk.ManifestSplittingConfig.from_dict({
+                icechunk.config.ManifestSplitCondition.name_matches("precipitation"): time_split_size,
+                icechunk.config.ManifestSplitCondition.name_matches("randomError"): time_split_size,
+                icechunk.config.ManifestSplitCondition.name_matches("precipitationQualityIndex"): time_split_size,
+                icechunk.config.ManifestSplitCondition.name_matches("probabilityLiquidPrecipitation"): time_split_size,
+            }),
+            preload=icechunk.ManifestPreloadConfig(max_total_refs=0),
+        )
+        config.set_virtual_chunk_container(
+            icechunk.VirtualChunkContainer(virtual_chunk_url, virtual_chunk_store)
+        )        
+        repo = icechunk.Repository.create(
+            storage=storage,
+            config=config,
+            authorize_virtual_chunk_access=virtual_chunk_credentials,
+        )
+        if save_config:
+            repo.save_config()
     return repo

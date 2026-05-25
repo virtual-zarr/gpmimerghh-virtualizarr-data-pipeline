@@ -128,7 +128,7 @@ class Processor:
             Chunk size along the time axis for the native ``time`` coord.
         """
         if repo is None:
-            repo = helpers.open_or_create_repo(storage=self.storage)
+            repo = helpers.open_or_create_repo(storage=self.storage, save_config=True)
 
         if _is_initialized(repo):
             print("Repo already initialized; skipping template write.")
