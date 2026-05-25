@@ -54,3 +54,7 @@ files = ["lambda", "cdk"]
 
 [tool.pytest.ini_options]
 pythonpath = ["lambda"]
+addopts = "-m 'not integration'"
+markers = [
+    "integration: tests that require real AWS credentials and bucket access",
+]

@@ -13,9 +13,6 @@ import earthaccess
 from datetime import datetime, timedelta
 from obstore.auth.earthdata import NasaEarthdataCredentialProvider
 
-BASE = "s3://gesdisc-cumulus-prod-protected/GPM_L3/GPM_3IMERGHH.07"
-
-
 def _load_earthdata_credentials() -> None:
     """Fetch Earthdata credentials from Secrets Manager and set as env vars."""
     if os.environ.get("EARTHDATA_USERNAME") and os.environ.get("EARTHDATA_PASSWORD"):
@@ -64,7 +61,7 @@ def url_for(t: datetime) -> str:
         + "-E" + end.strftime("%H%M%S")
         + f".{minutes_since:04d}.V07B.HDF5"
     )
-    return f"{BASE}/{t.year:04d}/{t.strftime('%j')}/{name}"
+    return f"{STORE_PREFIX}/{t.year:04d}/{t.strftime('%j')}/{name}"
 
 
 def _default_s3_registry(data_url: str) -> ObjectStoreRegistry:
@@ -207,7 +204,7 @@ def open_or_create_repo(
             storage=storage,
             authorize_virtual_chunk_access=virtual_chunk_credentials,
         )
-    except icechunk.RepositoryDoesntExist:
+    except icechunk.IcechunkError:
         config = icechunk.RepositoryConfig.default()
         time_split_size = {
             icechunk.config.ManifestSplitDimCondition.DimensionName("time"): manifest_split_size

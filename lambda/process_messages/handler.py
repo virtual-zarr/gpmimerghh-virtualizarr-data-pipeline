@@ -1,5 +1,6 @@
 import json
 from typing import Any, Dict
+import os
 
 from aws_lambda_powertools import Logger, Tracer
 from aws_lambda_powertools.utilities.batch import (
@@ -35,10 +36,10 @@ def process_notification(
     if key and bucket:
         s3_uri = f"s3://{bucket}/{key}"
         logger.info(
-            "Append file",
+            "Processing file",
             extra={"bucket": bucket, "key": key, "s3_uri": s3_uri},
         )
-        processor.process_file(file_key=key, session=session)
+        processor.process_file(file_url=f"s3://{bucket}/{key}", session=session)
         logger.info(f"{s3_uri} successfully processed")
 
 
@@ -55,7 +56,12 @@ def handler(event: Any, context: LambdaContext) -> PartialItemFailureResponse:
     """
     sqs_event = SQSEvent(event)
     records = sqs_event.raw_event["Records"]
-    virtualizarr_processor = Processor()
+    bucket = os.getenv("ICECHUNK_BUCKET", "")
+    prefix = os.getenv("ICECHUNK_PREFIX", "")
+    virtualizarr_processor = Processor(
+        bucket=bucket,
+        prefix=prefix
+    )
     repo = virtualizarr_processor.initialize_repo()
     session = virtualizarr_processor.initialize_session(repo=repo)
 

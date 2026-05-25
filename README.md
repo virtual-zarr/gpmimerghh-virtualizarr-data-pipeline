@@ -80,16 +80,31 @@ If you already have a bucket (e.g. `nasa-eodc-public`), set `ICECHUNK_BUCKET=nas
 
 ### Project commands :hammer:
 #### To set up the development environment
-```
+
+```sh
 ./scripts/setup.sh
 ```
 
-#### Run tests
-```
+#### Run unit tests
+
+```sh
 uv run pytest
 ```
 
+Unit tests run against local fixtures and require no AWS access.
+
+#### Run integration tests
+
+Integration tests hit real S3 buckets and require valid AWS credentials and the
+`ICECHUNK_BUCKET` / `ICECHUNK_PREFIX` environment variables to be set:
+
+```
+# set AWS credentials in your environment
+uv run pytest -m integration
+```
+
 #### Review your infrastructure before deploying
+
 ```
 uv run --env-file .env.sample cdk synth
 

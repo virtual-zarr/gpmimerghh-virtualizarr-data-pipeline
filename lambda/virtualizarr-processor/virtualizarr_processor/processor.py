@@ -236,7 +236,6 @@ class Processor:
         if t is None:
             t = _timestamp_from_url(file_url)
         time_idx = _time_index_for(t)
-
         vds = helpers.open_vds_data_only(file_url, registry=registry)
         vds.vz.to_icechunk(
             session.store,
