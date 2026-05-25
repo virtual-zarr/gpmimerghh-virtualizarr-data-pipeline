@@ -1,7 +1,8 @@
 # Build stage
 FROM public.ecr.aws/lambda/python:3.12 AS builder
 
-# Install uv
+# Install git (required for git-sourced dependencies) and uv
+RUN dnf install -y git && dnf clean all
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
 # Set uv environment variables

@@ -21,6 +21,7 @@ class StackSettings(BaseSettings):
     ACCOUNT_REGION: str = "us-west-2"
     ICECHUNK_BUCKET_NAME: str = "icechunk-outuput"
     ICECHUNK_BUCKET: str | None = None
+    ICECHUNK_PREFIX: str | None = None
     DATA_BUCKET_NAME: str | None = None
     PROJECT: str = "virtualizarr-data-pipelines"
     SNS_TOPIC: str | None = None

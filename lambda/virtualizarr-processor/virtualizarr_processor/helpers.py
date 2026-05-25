@@ -18,6 +18,8 @@ BASE = "s3://gesdisc-cumulus-prod-protected/GPM_L3/GPM_3IMERGHH.07"
 
 def _load_earthdata_credentials() -> None:
     """Fetch Earthdata credentials from Secrets Manager and set as env vars."""
+    if os.environ.get("EARTHDATA_USERNAME") and os.environ.get("EARTHDATA_PASSWORD"):
+        return
     secret_arn = os.environ.get("EARTHDATA_SECRET_ARN")
     if not secret_arn:
         return

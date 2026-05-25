@@ -7,7 +7,7 @@ dependencies = [
     "earthaccess",
     "h5py",
     "icechunk>=2.0.5",
-    "virtualizarr>=2.6.1",
+    "virtualizarr[hdf] @ git+https://github.com/zarr-developers/virtualizarr.git@fix/problem_fillvalues",
     "obspec-utils",
     "cftime"
 ]
@@ -18,3 +18,6 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["virtualizarr_processor"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
