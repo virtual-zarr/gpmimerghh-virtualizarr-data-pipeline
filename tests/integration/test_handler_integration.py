@@ -6,14 +6,14 @@ Requirements:
   - ICECHUNK_BUCKET and ICECHUNK_PREFIX env vars pointing to a writable bucket
 
 Run with:
-  AWS_PROFILE=<profile> uv run pytest -m integration
+  <AWS_CREDS_SET> uv run pytest -m integration
 
 Local vs cloud behaviour
 ------------------------
-Set CLOUD_INTEGRATION=true when running with proper AWS credentials (e.g. in
-us-west-2 with access to gesdisc-cumulus-prod-protected).  Without it the test
-is marked xfail — it is expected to fail with a 403 / PermissionDenied error,
-and that failure is treated as a pass so CI does not block on missing creds.
+Set CLOUD_INTEGRATION=true when running with in us-west-2 with access to
+gesdisc-cumulus-prod-protected.  Without it the test is marked xfail —
+it is expected to fail with a 403 / PermissionDenied error, and that failure
+is treated as a pass so CI does not block on missing creds.
 """
 
 import os
@@ -40,9 +40,9 @@ def test_handler_processes_real_s3_file() -> None:
                 "messageId": "msg-000",
                 "receiptHandle": "receipt-0",
                 "body": (
-                    '{"Records": [{"s3": {"bucket": {"name": "gesdisc-cumulus-prod-protected"},'
+                    '{"Records": [{"s3": {"bucket": {"name": "gesdisc-cumulus-prod-protected"},'  # noqa: E501
                     ' "object": {"key": "GPM_L3/GPM_3IMERGHH.07/2025/273/'
-                    "3B-HHR.MS.MRG.3IMERG.20250930-S233000-E235959.1410.V07B.HDF5\"}}}]}"
+                    '3B-HHR.MS.MRG.3IMERG.20250930-S233000-E235959.1410.V07B.HDF5"}}}]}'
                 ),
                 "attributes": {
                     "ApproximateReceiveCount": "1",
@@ -71,8 +71,10 @@ def test_handler_processes_real_s3_file() -> None:
         response = handler(event, context)
         assert response["batchItemFailures"] == []
     else:
-        # Without cloud credentials the handler runs until it hits gesdisc-cumulus-prod-protected.
-        # PermissionDeniedError surfaces directly if initialize_repo() needs a sample file,
-        # or as BatchProcessingError if the repo is already initialized and process_file() fails.
+        # Without cloud credentials the handler runs until it hits
+        # gesdisc-cumulus-prod-protected.
+        # PermissionDeniedError surfaces directly if initialize_repo()
+        # needs a sample file, or as BatchProcessingError if the repo is
+        # already initialized and process_file() fails.
         with pytest.raises((PermissionDeniedError, BatchProcessingError)):
             handler(event, context)

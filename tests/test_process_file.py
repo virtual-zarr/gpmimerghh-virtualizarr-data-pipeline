@@ -11,6 +11,7 @@ What this test exercises:
 To run:
     pytest tests/test_process_file.py -v
 """
+
 from __future__ import annotations
 
 from datetime import datetime, timedelta
@@ -21,14 +22,13 @@ import numpy as np
 import pytest
 import zarr
 from obspec_utils.registry import ObjectStoreRegistry
-
 from virtualizarr_processor import helpers
-from virtualizarr_processor.processor import _time_index_for, Processor
+from virtualizarr_processor.processor import Processor, _time_index_for
 
 # Small cube to keep tests sub-second.
-NLON = 12          # → 2 lon-chunks of size 6 for the 24-chunk vars
+NLON = 12  # → 2 lon-chunks of size 6 for the 24-chunk vars
 NLAT = 6
-N_TIME = 48        # one synthetic "day" of half-hours
+N_TIME = 48  # one synthetic "day" of half-hours
 helpers.T0 = datetime(1998, 1, 1)
 processor = Processor()
 
@@ -39,6 +39,7 @@ processor = Processor()
 # ---------------------------------------------------------------------------
 # process_file tests
 # ---------------------------------------------------------------------------
+
 
 def test_process_file_writes_at_time_zero(
     initialized_repo: icechunk.Repository,
@@ -85,7 +86,9 @@ def test_process_file_writes_at_nonzero_time(
     assert expected_idx == 5
 
     session = initialized_repo.writable_session("main")
-    processor.process_file(f"file://{fixture_file}", session, t=t, registry=local_registry)
+    processor.process_file(
+        f"file://{fixture_file}", session, t=t, registry=local_registry
+    )
     session.commit(f"wrote {t.isoformat()}")
 
     read = initialized_repo.readonly_session("main")
@@ -125,7 +128,9 @@ def test_process_file_does_not_touch_coords(
     lat_before = np.asarray(pre_root["lat"][:])
 
     session = initialized_repo.writable_session("main")
-    processor.process_file(f"file://{fixture_file}", session, t=helpers.T0, registry=local_registry)
+    processor.process_file(
+        f"file://{fixture_file}", session, t=helpers.T0, registry=local_registry
+    )
     session.commit("region write")
 
     post = initialized_repo.readonly_session("main")
@@ -138,6 +143,7 @@ def test_process_file_does_not_touch_coords(
 # ---------------------------------------------------------------------------
 # _time_index_for unit tests
 # ---------------------------------------------------------------------------
+
 
 def test_time_index_for_aligned() -> None:
     assert _time_index_for(helpers.T0) == 0

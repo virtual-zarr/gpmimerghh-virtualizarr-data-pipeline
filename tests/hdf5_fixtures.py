@@ -1,7 +1,9 @@
 """Shared HDF5 fixture helpers for the test suite."""
+
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import h5py
 import numpy as np
@@ -57,9 +59,15 @@ def _build_fixture(
     if populate_data:
         rng = np.random.default_rng(seed=0)
         expected = {
-            "precipitation": rng.uniform(0.0, 50.0, size=(1, nlon, nlat)).astype("float32"),
-            "randomError": rng.uniform(0.0, 5.0, size=(1, nlon, nlat)).astype("float32"),
-            "precipitationQualityIndex": rng.uniform(0.0, 1.0, size=(1, nlon, nlat)).astype("float32"),
+            "precipitation": rng.uniform(0.0, 50.0, size=(1, nlon, nlat)).astype(
+                "float32"
+            ),
+            "randomError": rng.uniform(0.0, 5.0, size=(1, nlon, nlat)).astype(
+                "float32"
+            ),
+            "precipitationQualityIndex": rng.uniform(
+                0.0, 1.0, size=(1, nlon, nlat)
+            ).astype("float32"),
             "probabilityLiquidPrecipitation": rng.integers(
                 0, 100, size=(1, nlon, nlat), dtype="int16"
             ),
@@ -119,8 +127,13 @@ def _build_fixture(
         intermediate = grid.create_group("Intermediate")
         intermediate.create_dataset("ignored", data=np.zeros(3, dtype="float32"))
 
-        def _add_data(name: str, dtype: str, chunk_lon: int,
-                      fillvalue, extra_attrs: dict | None = None):
+        def _add_data(
+            name: str,
+            dtype: str,
+            chunk_lon: int,
+            fillvalue: Any,
+            extra_attrs: dict | None = None,
+        ) -> None:
             ds = grid.create_dataset(
                 name,
                 shape=(1, nlon, nlat),
@@ -142,7 +155,9 @@ def _build_fixture(
 
         _add_data("precipitation", "float32", chunk_lon, np.float32(-9999.9))
         _add_data("randomError", "float32", chunk_lon, np.float32(-9999.9))
-        _add_data("precipitationQualityIndex", "float32", chunk_lon, np.float32(-9999.9))
+        _add_data(
+            "precipitationQualityIndex", "float32", chunk_lon, np.float32(-9999.9)
+        )
         _add_data(
             "probabilityLiquidPrecipitation",
             "int16",

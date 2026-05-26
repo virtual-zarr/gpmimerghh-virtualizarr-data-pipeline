@@ -8,6 +8,7 @@ runs in well under a second.
 To run:
     pytest tests/test_template_repo.py -v
 """
+
 from __future__ import annotations
 
 from datetime import datetime
@@ -18,20 +19,20 @@ import numpy as np
 import pytest
 import xarray as xr
 import zarr
+from hdf5_fixtures import LAT_ATTRS, LON_ATTRS, ROOT_ATTRS, _build_fixture
 from obspec_utils.registry import ObjectStoreRegistry
-
-from hdf5_fixtures import LON_ATTRS, LAT_ATTRS, ROOT_ATTRS, _build_fixture
 from virtualizarr_processor import helpers
 from virtualizarr_processor.processor import Processor, _is_initialized
 
 # Test cube dimensions — small enough to be fast, large enough to actually
 # exercise multi-chunk lon-chunking.
-TEST_NLON = 12        # → 2 chunks of size 6 for the 24-chunk vars
+TEST_NLON = 12  # → 2 chunks of size 6 for the 24-chunk vars
 TEST_NLAT = 6
-TEST_N_TIME = 48      # one synthetic "day" of half-hours
+TEST_N_TIME = 48  # one synthetic "day" of half-hours
 TEST_T0 = datetime(1998, 1, 1)
 TEST_TIME_CHUNK = TEST_N_TIME  # one shard
 processor = Processor()
+
 
 @pytest.fixture
 def fixture_file(tmp_path: Path) -> Path:
@@ -73,6 +74,7 @@ def test_repo(tmp_path: Path) -> icechunk.Repository:
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
 
 def test_initialize_repo_writes_coords_and_attrs(
     test_repo: icechunk.Repository, sample: xr.Dataset
@@ -144,7 +146,9 @@ def test_initialize_repo_writes_coords_and_attrs(
             assert arr.chunks[1] == TEST_NLON // 2, name
         # Fill value carried through from the HDF5 dataset.
         # Use numpy comparison so dtype subtleties are handled.
-        assert np.array(arr.fill_value).astype(arr.dtype) == np.array(fill).astype(arr.dtype), name
+        assert np.array(arr.fill_value).astype(arr.dtype) == np.array(fill).astype(
+            arr.dtype
+        ), name
         # A couple of representative attrs.
         assert arr.attrs["DimensionNames"] == "time,lon,lat", name
 
@@ -177,4 +181,6 @@ def test_initialize_repo_is_idempotent(
         time_chunk=TEST_TIME_CHUNK,
     )
     head_after = next(iter(test_repo.ancestry(branch="main"))).id
-    assert head_before != head_after, "second initialize_repo does not create a new commit"
+    assert head_before != head_after, (
+        "second initialize_repo does not create a new commit"
+    )

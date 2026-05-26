@@ -1,5 +1,5 @@
-from typing import Any
 import os
+from typing import Any
 
 from aws_lambda_powertools import Logger, Tracer
 from aws_lambda_powertools.utilities.typing import LambdaContext
@@ -15,10 +15,7 @@ def handler(event: Any, context: LambdaContext) -> None:
     try:
         bucket = os.getenv("ICECHUNK_BUCKET", "")
         prefix = os.getenv("ICECHUNK_PREFIX", "")
-        virtualizarr_processor = Processor(
-            bucket=bucket,
-            prefix=prefix
-        )
+        virtualizarr_processor = Processor(bucket=bucket, prefix=prefix)
         virtualizarr_processor.initialize_repo()
         logger.info("Icechunk initialized")
     except Exception as e:

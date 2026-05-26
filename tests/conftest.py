@@ -5,18 +5,17 @@ from pathlib import Path
 import icechunk
 import numpy as np
 import obstore
-from obstore.store import LocalStore
 import pytest
 import xarray as xr
+from hdf5_fixtures import _build_fixture
+from obspec_utils.registry import ObjectStoreRegistry
+from obstore.store import LocalStore
 from virtualizarr.manifests import ChunkManifest, ManifestArray
+from virtualizarr_processor import helpers
+from virtualizarr_processor.processor import Processor
 from zarr.codecs import BytesCodec
 from zarr.core.dtype import parse_data_type
 from zarr.core.metadata import ArrayV3Metadata
-
-from hdf5_fixtures import _build_fixture
-from obspec_utils.registry import ObjectStoreRegistry
-from virtualizarr_processor import helpers
-from virtualizarr_processor.processor import Processor
 
 CHUNK_DIR = os.path.realpath(tempfile.gettempdir())
 CHUNK_DIRECTORY_URL_PREFIX = f"file://{CHUNK_DIR}/"
@@ -124,7 +123,9 @@ def initialized_repo(
     fixture: tuple[Path, dict[str, np.ndarray]],
     local_registry: ObjectStoreRegistry,
 ) -> icechunk.Repository:
-    """Local icechunk repo with the Stage-0 template committed, ready for region writes."""
+    """
+    Local icechunk repo with the Stage-0 template committed, ready for region writes.
+    """
     fixture_file, _ = fixture
     virtual_chunk_url = f"file://{tmp_path}/"
     repo = helpers.open_or_create_repo(

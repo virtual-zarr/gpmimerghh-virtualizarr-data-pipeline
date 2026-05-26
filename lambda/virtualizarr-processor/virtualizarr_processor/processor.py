@@ -8,8 +8,6 @@ import numpy as np
 import xarray as xr
 import zarr
 from icechunk import Repository, Session
-
-# if TYPE_CHECKING:
 from obspec_utils.registry import ObjectStoreRegistry
 
 from . import helpers
@@ -32,16 +30,17 @@ def _native_chunks(var: xr.Variable) -> tuple:
 
 
 def _is_initialized(repo: icechunk.Repository, n_time: int = helpers.N_TIME) -> bool:
-    """Has the template commit been made yet?"""
-
+    """
+    Has the template commit been made yet?
+    """
+    session = repo.readonly_session("main")
     # A freshly created Icechunk repo has exactly one ancestor (the root /
     # "Repository initialized" commit). Once the full empty arrays have been committed
     # there are at least two ancestors. We use ``islice(..., 2)`` so we never
     # walk the full history.
-    # len(list(islice(repo.ancestry(branch="main"), 2))) > 1
-    session = repo.readonly_session("main")
     if len(list(islice(repo.ancestry(branch="main"), 2))) > 1:
         root = zarr.open_group(store=session.store, mode="r")
+        # double-check that the full time coordinate has been populated
         return tuple(root["time"].shape) == (n_time,)
     else:
         return False
@@ -65,7 +64,6 @@ def _timestamp_from_url(file_url: str) -> datetime:
       3B-HHR.MS.MRG.3IMERG.20250930-S233000-E235959.1410.V07B.HDF5
     """
     filename = file_url.rsplit("/", 1)[-1]
-    # token "20250930-S233000" → date + start-of-half-hour
     date_part, start_part = filename.split(".")[4].split("-")[:2]
     return datetime.strptime(date_part + start_part[1:], "%Y%m%d%H%M%S")
 
@@ -155,7 +153,6 @@ class Processor:
         session = repo.writable_session("main")
         root = zarr.open_group(store=session.store, mode="w")
 
-        # time: int64 nanoseconds since epoch; CF attrs let xarray decode on read
         root.create_array(
             "time",
             shape=(n_time,),
@@ -171,7 +168,6 @@ class Processor:
             }
         )
 
-        # lon / lat — small enough to write in one shot
         lon_data = sample.lon.values
         root.create_array(
             "lon",

@@ -78,6 +78,8 @@ There are two bucket-related settings that control where the Icechunk store is w
 
 If you already have a bucket (e.g. `nasa-eodc-public`), set `ICECHUNK_BUCKET=nasa-eodc-public` in your `.env` file to avoid the `already exists` error on deploy.
 
+You can also set `ICECHUNK_PREFIX` for any additional path to the icechunk store.
+
 ### Project commands :hammer:
 #### To set up the development environment
 

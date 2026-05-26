@@ -1,6 +1,6 @@
 import json
-from typing import Any, Dict
 import os
+from typing import Any, Dict
 
 from aws_lambda_powertools import Logger, Tracer
 from aws_lambda_powertools.utilities.batch import (
@@ -58,10 +58,7 @@ def handler(event: Any, context: LambdaContext) -> PartialItemFailureResponse:
     records = sqs_event.raw_event["Records"]
     bucket = os.getenv("ICECHUNK_BUCKET", "")
     prefix = os.getenv("ICECHUNK_PREFIX", "")
-    virtualizarr_processor = Processor(
-        bucket=bucket,
-        prefix=prefix
-    )
+    virtualizarr_processor = Processor(bucket=bucket, prefix=prefix)
     repo = virtualizarr_processor.initialize_repo()
     session = virtualizarr_processor.initialize_session(repo=repo)
 
