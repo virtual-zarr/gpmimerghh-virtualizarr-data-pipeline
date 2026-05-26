@@ -106,12 +106,11 @@ def open_vds_with_coords(
     registry: ObjectStoreRegistry | None = None,
 ) -> xr.Dataset:
     """
-    Returns a vds with coords + bounds loaded natively.
+    Returns a vds with coords + bounds loaded.
 
-    Use this when you need to *read* the coordinate values — e.g. to extract
-    time/lon/lat into the template, or when poking at a granule in a
-    notebook. Coords come back as concrete numpy arrays; data variables come
-    back as VirtualiZarr ManifestArrays.
+    Use this when you need to read the coordinate values — e.g. to extract
+    time,lon and lat as an empty data cube. Coords come back as materialized
+    numpy arrays; data variables come back as VirtualiZarr ManifestArrays.
     """
     return _open_vds(
         data_url,
@@ -126,9 +125,11 @@ def open_vds_data_only(
     *,
     registry: ObjectStoreRegistry | None = None,
 ) -> xr.Dataset:
-    """Stage 1 / region writes: returns a vds with **only** the 4 data variables.
+    """
+    Returns a vds with the 4 data variables and no coordinates.
+    Useful for region-writing.
 
-    Every coordinate and bounds variable is added to `drop_variables` so the
+    Every coordinate and bound variable is added to `drop_variables` so the
     HDF parser never reads them, and `loadable_variables` is empty so nothing
     gets materialised. The result can be written straight into
     ``region={"time": slice(t, t+1)}`` without any post-hoc ``drop_vars``.
@@ -173,7 +174,6 @@ def open_or_create_repo(
     virtual_chunk_url: str | None = None,
     virtual_chunk_store: "icechunk.ObjectStoreConfig | None" = None,
     virtual_chunk_credentials: "Dict[str, icechunk.AnyCredential] | None" = None,
-    save_config: bool = False,
 ) -> icechunk.Repository:
     """Open or create the GPM_3IMERGHH icechunk repo.
     Parameters
@@ -181,9 +181,6 @@ def open_or_create_repo(
     storage:
         Icechunk ``Storage`` for the repo itself. If ``None`` defaults to
         ``local_filesystem_storage(path=storage_path)``.
-    storage_path:
-        Path used to build the default local-filesystem storage. Ignored if
-        ``storage`` is passed.
     manifest_split_size:
         Number of timesteps per manifest shard.
     virtual_chunk_url:
@@ -247,6 +244,5 @@ def open_or_create_repo(
             config=config,
             authorize_virtual_chunk_access=virtual_chunk_credentials,
         )
-        if save_config:
-            repo.save_config()
+        repo.save_config()
     return repo

@@ -1,28 +1,27 @@
 import os
 import tempfile
 from datetime import datetime, timedelta
+from itertools import islice
 
 import icechunk
 import numpy as np
 import xarray as xr
-from icechunk import Repository, Session
 import zarr
+from icechunk import Repository, Session
 
-from typing import TYPE_CHECKING
-from itertools import islice
-
-#if TYPE_CHECKING:
+# if TYPE_CHECKING:
 from obspec_utils.registry import ObjectStoreRegistry
+
+from . import helpers
 
 CHUNK_DIR = os.path.realpath(tempfile.gettempdir())
 CHUNK_DIRECTORY_URL_PREFIX = f"file://{CHUNK_DIR}/"
 
-from . import helpers
-
 # Coord chunk size = one year of half-hours.
 TIME_CHUNK = 48 * 365  # 17_520
 
-def _native_chunks(var) -> tuple:
+
+def _native_chunks(var: xr.Variable) -> tuple:
     """Best-effort chunk-shape lookup for a virtualizarr-loaded variable."""
     enc_chunks = var.encoding.get("chunks") or var.encoding.get("preferred_chunks")
     if enc_chunks:
@@ -31,21 +30,22 @@ def _native_chunks(var) -> tuple:
         return tuple(var.data.chunks)
     raise ValueError("Couldn't determine native chunk shape for variable")
 
+
 def _is_initialized(repo: icechunk.Repository, n_time: int = helpers.N_TIME) -> bool:
-    """Has the template commit been made yet?
-    """
+    """Has the template commit been made yet?"""
 
     # A freshly created Icechunk repo has exactly one ancestor (the root /
     # "Repository initialized" commit). Once the full empty arrays have been committed
     # there are at least two ancestors. We use ``islice(..., 2)`` so we never
-    # walk the full history.    
+    # walk the full history.
     # len(list(islice(repo.ancestry(branch="main"), 2))) > 1
     session = repo.readonly_session("main")
     if len(list(islice(repo.ancestry(branch="main"), 2))) > 1:
         root = zarr.open_group(store=session.store, mode="r")
-        return root['time'].shape == (n_time,)
+        return tuple(root["time"].shape) == (n_time,)
     else:
         return False
+
 
 def _time_index_for(t: datetime) -> int:
     """Half-hour offset from the cube's epoch (1998-01-01 00:00:00 UTC)."""
@@ -56,6 +56,7 @@ def _time_index_for(t: datetime) -> int:
     if seconds % 1800 != 0:
         raise ValueError(f"{t!r} is not aligned to a 30-minute boundary")
     return seconds // 1800
+
 
 def _timestamp_from_url(file_url: str) -> datetime:
     """Parse the start timestamp out of a 3B-HHR... filename.
@@ -68,6 +69,7 @@ def _timestamp_from_url(file_url: str) -> datetime:
     date_part, start_part = filename.split(".")[4].split("-")[:2]
     return datetime.strptime(date_part + start_part[1:], "%Y%m%d%H%M%S")
 
+
 class Processor:
     region: str
     prefix: str
@@ -76,13 +78,15 @@ class Processor:
 
     def __init__(
         self,
-        region: str = 'us-west-2',
+        region: str = "us-west-2",
         bucket: str | None = None,
         prefix: str = "gpmimerg_hh_07",
     ) -> None:
         self.region = region
         self.bucket = bucket or os.getenv("ICECHUNK_BUCKET") or None
-        self.prefix = (prefix or os.getenv("ICECHUNK_PREFIX", "gpmimerg_hh_07")).strip("/")
+        self.prefix = (prefix or os.getenv("ICECHUNK_PREFIX", "gpmimerg_hh_07")).strip(
+            "/"
+        )
         self.storage = self._get_storage()
 
     def _get_storage(self) -> icechunk.Storage:
@@ -128,7 +132,7 @@ class Processor:
             Chunk size along the time axis for the native ``time`` coord.
         """
         if repo is None:
-            repo = helpers.open_or_create_repo(storage=self.storage, save_config=True)
+            repo = helpers.open_or_create_repo(storage=self.storage)
 
         if _is_initialized(repo):
             print("Repo already initialized; skipping template write.")
@@ -160,21 +164,33 @@ class Processor:
             dimension_names=("time",),
         )
         root["time"][:] = time.view("int64")
-        root["time"].attrs.update({
-            "units": "nanoseconds since 1970-01-01",
-            "calendar": "proleptic_gregorian",
-        })
+        root["time"].attrs.update(
+            {
+                "units": "nanoseconds since 1970-01-01",
+                "calendar": "proleptic_gregorian",
+            }
+        )
 
         # lon / lat — small enough to write in one shot
         lon_data = sample.lon.values
-        root.create_array("lon", shape=lon_data.shape, dtype=lon_data.dtype,
-                        chunks=(nlon,), dimension_names=("lon",))
+        root.create_array(
+            "lon",
+            shape=lon_data.shape,
+            dtype=lon_data.dtype,
+            chunks=(nlon,),
+            dimension_names=("lon",),
+        )
         root["lon"][:] = lon_data
         root["lon"].attrs.update(dict(sample.lon.attrs))
 
         lat_data = sample.lat.values
-        root.create_array("lat", shape=lat_data.shape, dtype=lat_data.dtype,
-                        chunks=(nlat,), dimension_names=("lat",))
+        root.create_array(
+            "lat",
+            shape=lat_data.shape,
+            dtype=lat_data.dtype,
+            chunks=(nlat,),
+            dimension_names=("lat",),
+        )
         root["lat"][:] = lat_data
         root["lat"].attrs.update(dict(sample.lat.attrs))
 
@@ -188,7 +204,8 @@ class Processor:
             src_chunks = _native_chunks(var)
             if len(src_chunks) != 3:
                 continue
-            # first chunk dimension is time, which always has a chunk size of 1 since GPM IMERG HH files only store 1 time step.
+            # first chunk dimension is time, which always has a chunk size of 1
+            # since GPM IMERG HH files only store 1 time step.
             chunks = (1, src_chunks[1], src_chunks[2])
             arr = root.create_array(
                 name=name,
@@ -247,7 +264,9 @@ class Processor:
         snapshot = session.commit(message=f"Append to {session.snapshot_id}")
         return str(snapshot)
 
-    def garbage_collect(self, expiry_time: datetime, repo: icechunk.Repository | None = None) -> icechunk.GCSummary:
+    def garbage_collect(
+        self, expiry_time: datetime, repo: icechunk.Repository
+    ) -> icechunk.GCSummary:
         repo.expire_snapshots(older_than=expiry_time)
         gcs = repo.garbage_collect(delete_object_older_than=expiry_time)
         return gcs
