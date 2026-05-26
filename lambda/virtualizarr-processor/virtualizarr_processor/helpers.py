@@ -68,8 +68,9 @@ def url_for(t: datetime) -> str:
 
 def _default_s3_registry(data_url: str) -> ObjectStoreRegistry:
     """Build the production GES DISC S3 registry for ``data_url``."""
-    _load_earthdata_credentials()
-    cp = NasaEarthdataCredentialProvider(CREDENTIALS_URL)
+    cp = NasaEarthdataCredentialProvider(
+        CREDENTIALS_URL, auth=_load_earthdata_credentials()
+    )
     store = S3Store.from_url(STORE_PREFIX, credential_provider=cp)
     return ObjectStoreRegistry({f"s3://{BUCKET}": store})
 
