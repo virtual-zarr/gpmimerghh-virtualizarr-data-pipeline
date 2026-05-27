@@ -68,7 +68,7 @@ Then set `EARTHDATA_SECRET_ARN` in your `.env` file to the ARN returned by the c
 EARTHDATA_SECRET_ARN=arn:aws:secretsmanager:<region>:<account-id>:secret:<your-stack-name>/earthdata-credentials-<suffix>
 ```
 
-The Lambda functions fetch the secret at startup and set the credentials as environment variables, so `earthaccess` and the Earthdata S3 credential provider work without any further changes.
+The Lambda functions fetch the secret and set the credentials as environment variables for the Earthdata S3 credential provider.
 
 #### Icechunk bucket settings
 There are two bucket-related settings that control where the Icechunk store is written:
