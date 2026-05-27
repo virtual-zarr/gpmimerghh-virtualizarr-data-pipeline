@@ -23,8 +23,10 @@ def _load_earthdata_credentials() -> None:
     client = boto3.client("secretsmanager")
     response = client.get_secret_value(SecretId=secret_arn)
     creds = json.loads(response["SecretString"])
-    os.environ["EARTHDATA_USERNAME"] = creds["username"]
-    os.environ["EARTHDATA_PASSWORD"] = creds["password"]
+    os.environ["EARTHDATA_USERNAME"], os.environ["EARTHDATA_PASSWORD"] = (
+        creds["username"],
+        creds["password"],
+    )
 
 
 # Auxiliary variables that we never want in the analysis-ready cube. The
