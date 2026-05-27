@@ -4,7 +4,6 @@ from datetime import datetime, timedelta
 from typing import Dict
 
 import boto3
-import earthaccess
 import icechunk
 import xarray as xr
 from obspec_utils.registry import ObjectStoreRegistry
@@ -66,10 +65,14 @@ def url_for(t: datetime) -> str:
     return f"{STORE_PREFIX}/{t.year:04d}/{t.strftime('%j')}/{name}"
 
 
+def _credential_provider() -> NasaEarthdataCredentialProvider:
+    _load_earthdata_credentials()
+    return NasaEarthdataCredentialProvider(CREDENTIALS_URL)
+
+
 def _default_s3_registry(data_url: str) -> ObjectStoreRegistry:
     """Build the production GES DISC S3 registry for ``data_url``."""
-    _load_earthdata_credentials()
-    cp = NasaEarthdataCredentialProvider(CREDENTIALS_URL)
+    cp = _credential_provider()
     store = S3Store.from_url(STORE_PREFIX, credential_provider=cp)
     return ObjectStoreRegistry({f"s3://{BUCKET}": store})
 
@@ -144,16 +147,8 @@ def open_vds_data_only(
 
 def get_icechunk_creds(daac: str = "GES_DISC") -> icechunk.S3StaticCredentials:
     """Get refreshable earthdata credentials for icechunk."""
-    auth = earthaccess.login()
-    if not auth.authenticated:
-        raise PermissionError("Could not authenticate using environment variables")
-    creds = auth.get_s3_credentials(daac=daac)
-    return icechunk.S3StaticCredentials(
-        access_key_id=creds["accessKeyId"],
-        secret_access_key=creds["secretAccessKey"],
-        expires_after=datetime.fromisoformat(creds["expiration"]),
-        session_token=creds["sessionToken"],
-    )
+    creds = _credential_provider()
+    return icechunk.S3StaticCredentials(**creds)
 
 
 def get_container_credentials() -> icechunk.AnyCredential:
