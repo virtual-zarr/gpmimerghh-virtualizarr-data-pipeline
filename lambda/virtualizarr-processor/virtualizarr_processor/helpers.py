@@ -147,10 +147,14 @@ def open_vds_data_only(
     )
 
 
-def get_icechunk_creds(daac: str = "GES_DISC") -> icechunk.S3StaticCredentials:
+def get_icechunk_creds() -> icechunk.S3StaticCredentials:
     """Get refreshable earthdata credentials for icechunk."""
-    creds = _credential_provider()
-    return icechunk.S3StaticCredentials(**creds)
+    creds = _credential_provider()()
+    return icechunk.S3StaticCredentials(
+        access_key_id=creds["access_key_id"],
+        secret_access_key=creds["secret_access_key"],
+        session_token=creds["token"],
+    )
 
 
 def get_container_credentials() -> icechunk.AnyCredential:
