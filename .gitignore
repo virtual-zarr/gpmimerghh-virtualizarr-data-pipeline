@@ -224,3 +224,4 @@ __marimo__/
 
 /cdk.out
 cdk.context.json
+.dispatch_checkpoint

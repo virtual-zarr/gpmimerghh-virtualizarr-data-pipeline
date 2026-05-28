@@ -45,7 +45,7 @@ from aws_cdk import (
 from aws_cdk import custom_resources as cr
 from constructs import Construct
 from settings import StackSettings  # type: ignore[import-not-found]
-from stack_constructs import BatchInfra, BatchJob
+from stack_constructs import BatchInfra, BatchJob  # type: ignore[import-not-found]
 
 
 class VirtualizarrSqsStack(Stack):
@@ -71,7 +71,10 @@ class VirtualizarrSqsStack(Stack):
             self,
             f"{settings.STACK_NAME}-queue",
             queue_name=f"{settings.STACK_NAME}-queue",
-            visibility_timeout=Duration.seconds(1800),
+            visibility_timeout=Duration.seconds(settings.VISIBILITY_TIMEOUT),
+            # A full backfill enqueues ~486k messages and runs for days; without
+            # this the SQS default (4 days) would silently drop unprocessed ones.
+            retention_period=Duration.days(14),
             dead_letter_queue=sqs.DeadLetterQueue(
                 max_receive_count=20,
                 queue=self.dlq,
@@ -119,8 +122,8 @@ class VirtualizarrSqsStack(Stack):
                 platform=ecr_assets.Platform.LINUX_AMD64,  # or LINUX_AMD64
             ),
             architecture=_lambda.Architecture.X86_64,
-            timeout=Duration.minutes(5),
-            memory_size=2048,
+            timeout=Duration.seconds(settings.LAMBDA_TIMEOUT),
+            memory_size=settings.LAMBDA_MEMORY,
             environment={
                 "EARTHDATA_SECRET_ARN": settings.EARTHDATA_SECRET_ARN,
                 "ICECHUNK_BUCKET": self.icechunk_bucket.bucket_name,

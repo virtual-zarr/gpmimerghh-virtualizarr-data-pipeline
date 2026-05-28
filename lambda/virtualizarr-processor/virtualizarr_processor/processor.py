@@ -1,5 +1,7 @@
 import os
+import random
 import tempfile
+import time
 from datetime import datetime, timedelta
 from itertools import islice
 
@@ -72,7 +74,7 @@ class Processor:
     region: str
     prefix: str
     bucket: str | None
-    storage: icechunk.Storage | None
+    storage: icechunk.Storage
 
     def __init__(
         self,
@@ -256,9 +258,39 @@ class Processor:
         )
         return True
 
-    def commit_processed_files(self, session: Session) -> str:
-        snapshot = session.commit(message=f"Append to {session.snapshot_id}")
-        return str(snapshot)
+    def commit_processed_files(
+        self,
+        session: Session,
+        *,
+        max_attempts: int = 10,
+        base_backoff: float = 0.5,
+        max_backoff: float = 30.0,
+    ) -> str:
+        """Commit the batch's staged region writes, rebasing on conflict.
+
+        Many Lambdas commit to ``main`` concurrently. An Icechunk commit is a
+        compare-and-swap on the branch tip, so all but one of a set of racing
+        commits raises ``ConflictError``. Every granule writes a *disjoint*
+        ``time`` slice, so the changes never truly overlap and
+        ``ConflictDetector`` replays them cleanly onto the advanced tip; we
+        then retry the commit. Backoff is jittered so a thundering herd of
+        Lambdas spreads its retries out instead of colliding again in lockstep.
+
+        A genuine overlap surfaces as ``RebaseFailedError`` from ``rebase`` and
+        propagates (retrying wouldn't help). On attempt exhaustion the final
+        ``ConflictError`` propagates too, so the caller fails the batch and SQS
+        redelivers it.
+        """
+        for attempt in range(max_attempts):
+            try:
+                return str(session.commit(message=f"Append to {session.snapshot_id}"))
+            except icechunk.ConflictError:
+                if attempt == max_attempts - 1:
+                    raise
+                session.rebase(icechunk.ConflictDetector())
+                backoff = min(base_backoff * 2**attempt, max_backoff)
+                time.sleep(backoff * (0.5 + random.random()))
+        raise RuntimeError("commit retry loop exited without returning")  # unreachable
 
     def garbage_collect(
         self, expiry_time: datetime, repo: icechunk.Repository
