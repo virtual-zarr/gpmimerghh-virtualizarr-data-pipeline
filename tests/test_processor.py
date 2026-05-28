@@ -19,6 +19,7 @@ def protocol_type_check(processor: Processor) -> None:
     assert processor
 
 
+# FIXME: This should actually test that Processor follows VirtualiZarrProcessor protocol
 def test_follows_protocol() -> None:
     processor = Processor()
     protocol_type_check(processor=processor)
