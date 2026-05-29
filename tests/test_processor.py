@@ -9,20 +9,23 @@ from icechunk import Repository, Session
 from obspec_utils.registry import ObjectStoreRegistry
 from virtualizarr_processor import helpers
 from virtualizarr_processor.processor import Processor
+from virtualizarr_processor.typing import VirtualizarrProcessor
 
 
 def _conflict() -> icechunk.ConflictError:
     return icechunk.ConflictError("expected", "actual")
 
 
-def protocol_type_check(processor: Processor) -> None:
-    assert processor
+def _accepts_protocol(_: VirtualizarrProcessor) -> None:
+    """
+    Static-check helper: type-checkers verify the argument conforms to the protocol.
+    """
 
 
-# FIXME: This should actually test that Processor follows VirtualiZarrProcessor protocol
 def test_follows_protocol() -> None:
     processor = Processor()
-    protocol_type_check(processor=processor)
+    _accepts_protocol(processor)
+    assert isinstance(processor, VirtualizarrProcessor)
 
 
 def test_initialize_repo(initialized_repo: icechunk.Repository) -> None:

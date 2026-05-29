@@ -34,7 +34,7 @@ from pathlib import Path
 from typing import Iterable, Iterator
 
 import boto3
-from boto3 import SQSClient
+from mypy_boto3_sqs.client import SQSClient
 from virtualizarr_processor import helpers
 
 STEP = timedelta(minutes=30)
