@@ -1,6 +1,7 @@
 import json
 import os
 from datetime import datetime, timedelta
+from functools import lru_cache
 from typing import Dict
 
 import boto3
@@ -67,13 +68,29 @@ def url_for(t: datetime) -> str:
     return f"{STORE_PREFIX}/{t.year:04d}/{t.strftime('%j')}/{name}"
 
 
+@lru_cache(maxsize=1)
 def _credential_provider() -> NasaEarthdataCredentialProvider:
+    """Build (and cache) the Earthdata credential provider.
+
+    Cached per process so every granule reuses one provider instead of
+    constructing a fresh one (each carrying its own ``requests.Session``).
+    """
     _load_earthdata_credentials()
     return NasaEarthdataCredentialProvider(CREDENTIALS_URL)
 
 
-def _default_s3_registry(data_url: str) -> ObjectStoreRegistry:
-    """Build the production GES DISC S3 registry for ``data_url``."""
+@lru_cache(maxsize=1)
+def _default_s3_registry() -> ObjectStoreRegistry:
+    """Build (and cache) the production GES DISC S3 registry.
+
+    Cached per process: reusing one ``S3Store`` lets obstore keep its temporary
+    S3 credentials cached across granules, so the Earthdata ``s3credentials``
+    endpoint is hit roughly once per credential lifetime per warm Lambda
+    container instead of once per granule. Building a fresh store (hence a fresh
+    obstore credential cache) for every granule produced bursts of token
+    requests that intermittently failed — surfacing as ``UnauthenticatedError``
+    from the credential-refresh HTTP call.
+    """
     cp = _credential_provider()
     store = S3Store.from_url(STORE_PREFIX, credential_provider=cp)
     return ObjectStoreRegistry({f"s3://{BUCKET}": store})
@@ -95,7 +112,7 @@ def _open_vds(
     fixture file without touching S3.
     """
     if registry is None:
-        registry = _default_s3_registry(data_url)
+        registry = _default_s3_registry()
     parser = HDFParser(group="Grid", drop_variables=drop_variables)
     return open_virtual_dataset(
         url=data_url,
