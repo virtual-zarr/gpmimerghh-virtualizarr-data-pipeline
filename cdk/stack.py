@@ -154,6 +154,7 @@ class VirtualizarrSqsStack(Stack):
             lambda_event_sources.SqsEventSource(
                 self.queue,
                 batch_size=settings.SQS_BATCH_SIZE,
+                max_batching_window=Duration.seconds(settings.SQS_MAX_BATCHING_WINDOW),
                 report_batch_item_failures=True,
                 max_concurrency=settings.MAX_CONCURRENCY,
             )
