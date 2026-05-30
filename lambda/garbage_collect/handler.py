@@ -9,7 +9,7 @@ logger = Logger()
 def handler() -> None:
     try:
         virtualizarr_processor = Processor()
-        expiry_time = datetime.now(timezone.utc) - timedelta(days=2)
+        expiry_time = datetime.now(timezone.utc) - timedelta(hours=3)
         print(expiry_time)
         repo = virtualizarr_processor.initialize_repo()
         virtualizarr_processor.garbage_collect(expiry_time=expiry_time, repo=repo)
