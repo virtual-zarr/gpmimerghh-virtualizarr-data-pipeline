@@ -1,131 +1,182 @@
 # Scale the GPM IMERG HH virtual Icechunk build
 
-## Context
+Status: **implemented and validated at month scale.** This doc started as a plan; it now
+records what we built, why, and what we learned tuning it. Year-scale is the next test.
 
-The pipeline (3-stage SQS + Lambda, design.md) must write virtual references for
-**486,480 granules** into one Icechunk store. Scaling to ~half a million messages exposes two issues:
+## The core constraint
 
-1. **Commits serialize on `main` and aren't rebase-safe.** `Processor.commit_processed_files`
-   (`lambda/virtualizarr-processor/virtualizarr_processor/processor.py:259-261`) does a
-   bare `session.commit()`. Icechunk commits are a compare-and-swap on the branch tip, so
-   only one batch can land at a time. With `MAX_CONCURRENCY=50`, most concurrent commits
-   conflict; the handler then marks the **whole batch** failed (`lambda/process_messages/handler.py:110-116`),
-   SQS redelivers, and after `max_receive_count=20` the messages hit the DLQ. Because every
-   granule writes a **disjoint** time slice, a rebase resolves cleanly — we just never call it.
-2. **The main queue has no retention period** (`cdk/stack.py:70-79`), so it defaults to
-   **4 days**. A 486k-message backfill that runs longer than 4 days will silently drop
-   unprocessed messages.
+The pipeline (3-stage SQS + Lambda, `design.md`) writes virtual references for **486,480
+granules** (1998-01-01 → 2025-10-01, every 30 min) into one Icechunk store. Each granule is
+a disjoint `time` slice.
 
-Key insight that drives tuning: **commit throughput, not per-file processing, is the
-ceiling.** Raising concurrency does not raise throughput — it multiplies rebase churn.
-The levers that help are *fewer, larger commits* (bigger `SQS_BATCH_SIZE`) and a
-*rebase-retry* loop on commit, with concurrency kept moderate.
+**Commit throughput is the ceiling, not per-file work.** An Icechunk commit is a
+compare-and-swap on the `main` branch tip, so commits *serialize* — only one batch lands at
+a time. Two consequences drive everything below:
 
-- Add a rebase-retry loop
-- Add dispatch script
-- Add a tuning runbook.
+- **Raising `MAX_CONCURRENCY` does not raise throughput.** More Lambdas just queue at the
+  commit point (and pile load on the Earthdata auth endpoint — see below). The real
+  throughput lever is **fewer, larger commits**, i.e. a bigger `SQS_BATCH_SIZE`.
+- **Per-file processing is cheap and network-bound** (~0.5 s/granule — HDF5 header
+  range-reads from GES DISC). Memory is a non-issue: a "chunk" is byte-range metadata, not
+  array data.
 
-## Existing pieces to reuse
+The manifest is split **one year per shard** (`open_or_create_repo` uses
+`manifest_split_size = 48 * 365 = 17,520`). This matters for scaling: each commit rewrites
+the shard(s) its batch touched, and a shard's rewrite cost grows as it fills.
 
-- `helpers.url_for(t)` (`helpers.py:54-67`) — deterministic timestamp → full `s3://` URL.
-- `helpers.T0`, `helpers.T_MINUS_1`, `helpers.N_TIME`, `helpers.BUCKET` (`helpers.py:42-51`).
-- `Processor._time_index_for` / `_timestamp_from_url` (`processor.py:49-68`) — already prove
-  the filename ↔ time-index mapping; the dispatch script does not need a time index, only the URL.
-- Message shape expected by the handler: `process_notification` reads
-  `message["Records"][0]["s3"]["bucket"]["name"]` and `["object"]["key"]` (`handler.py:34-35`).
+## What we changed (and why)
 
-## Dispatch script (runs from laptop)
+### 1. Rebase-resolve commit — `Processor.commit_processed_files` (processor.py)
 
-New file: `scripts/dispatch.py` (add a `scripts/` dir). Pure enumeration + SQS sends; no
-HDF5 reads, no AWS compute. Runs locally with `sqs:SendMessage` perms and the queue URL.
+The original bare `session.commit()` meant any concurrent commit conflict failed the whole
+batch → SQS redelivery → eventually DLQ. We added a bounded, jittered-backoff retry loop
+that rebases on `ConflictError` and retries the commit.
 
-Behavior:
-- Iterate `t = T0 → T_MINUS_1` step 30 min (use `helpers.N_TIME` as the count check).
-- For each `t`, build the URL via `helpers.url_for(t)`, then derive `bucket`/`key`.
-  **Important:** `url_for` emits a doubled slash (STORE_PREFIX ends in `/`). Build the key
-  as everything after `s3://{BUCKET}/` and **collapse the `//`** so it resolves to the real
-  S3 object. (The single-file dry run confirms the key is correct — see Verification.)
-- Build body `{"Records": [{"s3": {"bucket": {"name": BUCKET}, "object": {"key": key}}}]}`
-  (matches `handler.py:34-35`; send to SQS directly, not SNS-wrapped).
-- Send via `sqs.send_message_batch` (10 entries/call — SQS max; this is the *send* batch and
-  is independent of `SQS_BATCH_SIZE`, which is how many records the Lambda *pulls*).
-- Use a thread pool (~10–20 workers) for the ~48,648 batch calls — minutes from a laptop.
-- **Resumable:** checkpoint the last-enqueued timestamp to a local file so a mid-run crash can
-  resume without double-enqueueing (region writes are idempotent, so duplicates are harmless
-  but wasteful).
-- Flags: `--start`, `--end` (default T0/T_MINUS_1) to scope partial runs (e.g. one year for the
-  year-scale test), `--dry-run` (print counts, send nothing), `--queue-url`.
+The important subtlety: **the rebase solver must *resolve*, not just *detect*.**
+`ConflictDetector` only detects — on any conflict it raises `RebaseFailedError`
+("Snapshot cannot be rebased. Aborting rebase"). We instead use:
 
-## Rebase-retry commit (processor.py)
-
-Edit `Processor.commit_processed_files` (`processor.py:259-261`) to loop:
-
-```
-for attempt in range(max_attempts):          # e.g. 10
-    try:
-        return str(session.commit(message=...))
-    except icechunk.ConflictError:
-        session.rebase(icechunk.ConflictDetector())   # disjoint slices => resolves clean
-        sleep(backoff with jitter)
-# exhausted -> raise so the handler fails the batch and SQS redelivers
+```python
+session.rebase(icechunk.BasicConflictSolver(
+    on_chunk_conflict=icechunk.VersionSelection.UseOurs
+))
 ```
 
-Use icechunk's default/basic conflict solver (`ConflictDetector` — no `OnChunkConflict`
-override needed since slices never overlap). Bounded attempts + jittered exponential backoff
-so a thundering herd spreads out. Exhaustion re-raises → existing handler path
-(`handler.py:110-116`) marks the batch failed and SQS redelivers, which is the correct fallback.
-This makes the common case succeed in-Lambda instead of via redelivery, which is what keeps
-messages out of the DLQ.
+Why this is needed and safe: granules *usually* write disjoint slices, but SQS is
+at-least-once and the dispatch is resumable/redrivable, so the **same** granule (same
+`time` index, same chunks) can be processed by two batches concurrently. Two such commits
+racing produce a `ChunkDoubleUpdate`, which `ConflictDetector` refuses. Because a duplicate
+region write is **byte-identical** to the original (same source byte ranges), "ours" and
+"theirs" are the same bytes — `UseOurs` resolves it cleanly. Anything `UseOurs` can't
+resolve (a structural / Zarr-metadata conflict) re-raises `RebaseFailedError`; we log the
+conflicting `conflict_type`/`path` and propagate so the batch redelivers (retrying wouldn't
+help). Attempt exhaustion re-raises the `ConflictError` for the same reason.
 
-## Infrastructure hardening + tunable knobs (cdk)
+### 2. Cache the Earthdata credential provider — `helpers.py`
 
-- **Fix queue retention** (`cdk/stack.py:70-79`): add `retention_period=Duration.days(14)` to
-  the main queue. Without this a multi-day backfill loses messages.
-- **Parameterize the knobs** so tuning = redeploy with env vars, no code edits. In
-  `cdk/settings.py` add (with defaults): `LAMBDA_TIMEOUT` (sec, default 300; raise toward 900
-  to allow bigger batches), `LAMBDA_MEMORY` (MB, default 2048), `VISIBILITY_TIMEOUT`
-  (sec, default 1800). Wire them into `stack.py:122-123` (timeout/memory) and `stack.py:74`
-  (visibility). Keep the invariant **visibility_timeout ≥ lambda_timeout** (add an assert in
-  settings). `SQS_BATCH_SIZE` and `MAX_CONCURRENCY` already exist (`settings.py:28-29`,
-  used at `stack.py:153-155`).
+Reading a source granule makes obstore mint temporary S3 credentials from the Earthdata
+`s3credentials` endpoint. Building a fresh `NasaEarthdataCredentialProvider` + `S3Store`
+**per granule** defeated obstore's credential cache, so the endpoint was hit once per
+granule → bursts that intermittently failed with `UnauthenticatedError` (surfaced as a
+wrapped `SystemError` crossing the Rust/Python boundary). We memoize both with
+`@lru_cache(maxsize=1)`, so one provider + store are reused across the whole batch in a warm
+container, hitting the endpoint roughly once per credential lifetime.
 
-## Test sequence (day, week, month, year, five-years, full)
+**Caveat that bounds concurrency:** the cache is *per process*. It does nothing across
+containers, so the auth-endpoint load scales with `MAX_CONCURRENCY`, not with how many
+granules each container reads. (See the `MAX_CONCURRENCY=1000` lesson below.)
 
-Run the staged sequence from design.md, measuring at each step. Concrete starting points and
-what to watch:
+### 3. Infrastructure hardening + tunable knobs — `cdk/`
 
-1. **Single-file dry run** dispatch one granule, confirm the key resolves
-   (no `//` 404), one region write lands, `xr.open_zarr` reads it.
-2. **Year-scale (1998, 17,520 msgs).** Start `SQS_BATCH_SIZE=50`, `MAX_CONCURRENCY=10`,
-   `LAMBDA_TIMEOUT=900`. Measure from CloudWatch: commit duration, conflict/retry counts,
-   Lambda wall-time per batch, DLQ depth (should stay 0), and the resulting per-shard manifest
-   size (target ~80–200 MB/shard as in design.md).
-   - Per-file time is network-bound (HDF5 header range-reads from GES DISC). Confirm
-     `batch_size × per_file_time` stays well under `LAMBDA_TIMEOUT` with margin.
-   - If commits are the bottleneck (Lambdas idle waiting to commit): **raise `SQS_BATCH_SIZE`**
-     (fewer, larger commits), not concurrency. Bigger batches also reduce manifest-shard
-     rewrite amplification (each shard is re-written fewer times as it fills).
-   - If you see steady conflicts/retries even with the rebase loop: **lower `MAX_CONCURRENCY`**.
-3. **Concurrency stress (5 years).** Confirm DLQ stays empty and commit latency is stable as the
-   active manifest shard grows.
-4. **Full build (486k).** Apply tuned values. Watch DLQ; redrive any stragglers (idempotent).
+- **Queue retention** raised to 14 days (`cdk/stack.py`) — the default 4 days would silently
+  drop messages on a multi-day backfill.
+- **Tunable knobs in `cdk/settings.py`** so tuning = redeploy, no code edits:
+  `LAMBDA_TIMEOUT`, `LAMBDA_MEMORY`, `VISIBILITY_TIMEOUT`, `MAX_CONCURRENCY`,
+  `SQS_BATCH_SIZE`, plus `SQS_MAX_BATCHING_WINDOW`.
+- **SQS batching window** (`SQS_MAX_BATCHING_WINDOW`, default 5 s, wired into the
+  `SqsEventSource`): AWS **requires** a batching window ≥ 1 s once `SQS_BATCH_SIZE > 10`.
+  A `_check_batching_window` validator enforces this; `_check_visibility_timeout` enforces
+  `VISIBILITY_TIMEOUT ≥ LAMBDA_TIMEOUT`.
 
-Note on an advanced lever (only if single-branch commit throughput proves unacceptable after
-tuning): Icechunk's distributed `Session.fork`/merge pattern commits many region writes in one
-shot, but it needs a coordinator and does **not** fit the per-batch-Lambda VDP model — it'd be a
-separate execution path. Out of scope unless the runbook shows we need it.
+## Operational lessons (learned the hard way)
+
+- **`VISIBILITY_TIMEOUT ≥ LAMBDA_TIMEOUT`, and let CDK own it.** Hand-editing the SQS
+  visibility timeout to 60 s while the Lambda ran longer caused in-flight messages to become
+  visible again and be reprocessed *concurrently* → a flood of duplicate same-slice writes →
+  the rebase conflicts above (>100 in 10 min). The settings validator guarantees the
+  invariant for CDK-managed deploys; don't bypass it in the console. AWS best practice is
+  ~6× the Lambda timeout for redrive headroom. **Current `300/300` holds the invariant but
+  has zero margin — bump `VISIBILITY_TIMEOUT` toward 900–1800 before pushing batch size.**
+- **Keep `MAX_CONCURRENCY` moderate (~50).** At 50 we saw ~10 transient auth errors over a
+  full week (self-healing). At **1000** the Earthdata auth endpoint was overwhelmed by ~1000
+  simultaneous cold-container credential fetches → widespread `UnauthenticatedError`. Since
+  concurrency buys no throughput (commits serialize) and *aggravates* both auth load and
+  rebase churn, there's no reason to go high.
+- **Batch size is the throughput lever, capped by `LAMBDA_TIMEOUT`.** Bigger batches mean
+  fewer serialized commits *and* fewer credential fetches per granule (one cached token
+  amortized over the batch). The cap: `batch_size × per_granule_time` must finish within the
+  timeout with margin.
+
+## Measured numbers (early in the build, shard nearly empty)
+
+| Config (`conc` / `batch`) | Lambda duration | Throughput | Notes |
+|---|---|---|---|
+| 50 / 25 | ~12 s/batch | 1 week (336) in ~6 min | ~10 transient auth errors |
+| 50 / 100 | well under timeout | 1 week in ~2 min; 1 month (~1,440) in ~10 min | DLQ 0 |
+
+Per-granule ≈ 0.5 s. At `batch 100` that's ~50 s/batch — a ~25× margin under the 300 s
+timeout, so batch size can grow substantially **without** raising the timeout or memory
+(`LAMBDA_MEMORY=4096`). Current deployed config: `MAX_CONCURRENCY=50`, `SQS_BATCH_SIZE=100`,
+`SQS_MAX_BATCHING_WINDOW=5`, `LAMBDA_TIMEOUT=300`, `VISIBILITY_TIMEOUT=300`.
+
+## Scaling regimes — why small-scale numbers over-promise
+
+Week and month tests run in a **linear "under-saturated" zone** and will *under-count* the
+full build. Two effects only appear at year scale:
+
+1. **Concurrency saturation.** A month is ~15 batches (`batch 100`) against 50 slots —
+   fully parallel, lots of idle capacity. A year is ~175 batches → ~3–4 waves on 50
+   concurrency, *and* all 175 commits serialize on `main`. Small tests never exercise this.
+2. **Shard fill.** A month fills only ~8% of one annual shard, so commits stay cheap the
+   whole time. A year fills a shard 0 → 17,520 refs, and each commit rewrites it, so commit
+   duration **climbs** across the run.
+
+So a clean ~8–10 min month confirms "still in the linear zone," **not** that the full build
+is linear. Rough throughput model: `total ≈ max(reads: granules·per_granule/concurrency,
+commits: (granules/batch_size)·commit_cycle)`. At scale the commit term dominates and grows
+with shard fill; bigger batches shrink it.
+
+**Next test: a full year (1998, 17,520 msgs).** Watch in CloudWatch: total time, the
+**commit-duration trend** as the shard fills (the key signal), Lambda duration vs timeout,
+memory headroom, and DLQ depth (must stay 0). Because each year fills its own shard from
+empty, the per-year cost curve roughly repeats — so a year's curve is what to extrapolate
+the ~28-year build from, not a week's average. If commit cost keeps climbing toward year-end,
+raise `SQS_BATCH_SIZE` (fewer commits per shard) before running the whole thing.
+
+Advanced lever (only if single-branch commit throughput proves unacceptable after tuning):
+Icechunk's distributed `Session.fork`/merge commits many region writes at once, but it needs
+a coordinator and doesn't fit the per-batch-Lambda model — a separate execution path, out of
+scope unless the year-scale runbook shows we need it.
+
+## Dispatch script — `scripts/dispatch.py`
+
+Pure enumeration + SQS sends; no HDF5 reads, no AWS compute. Runs locally with
+`sqs:SendMessage` and the queue URL.
+
+- Iterates `t` over half-open `[--start, --end)` in 30-min steps; builds the URL via
+  `helpers.url_for(t)`, derives `bucket`/`key`, **collapsing the doubled `//`** that
+  `url_for` emits (STORE_PREFIX ends in `/`) so the key resolves on S3.
+- Body shape matches the handler: `{"Records":[{"s3":{"bucket":{"name":BUCKET},
+  "object":{"key":key}}}]}` (sent direct to SQS, not SNS-wrapped).
+- Sends via `sqs.send_message_batch` (10/call — SQS max; independent of `SQS_BATCH_SIZE`,
+  which is how many records the Lambda *pulls*). Thread pool of ~10–20 workers.
+- **Resumable:** checkpoints the last-enqueued timestamp locally so a crash resumes without
+  double-enqueueing (duplicates are harmless — region writes are idempotent and the rebase
+  solver resolves concurrent ones — just wasteful).
+
+Example (used for the month-scale test, 28 days in ~10 min):
+
+```
+python scripts/dispatch.py \
+  --queue-url https://sqs.us-west-2.amazonaws.com/444055461661/gpmimerg-vz-dp-queue \
+  --start 1998-03-25T23:30:00 --end 1999-03-26T00:00
+```
 
 ## Verification
 
-- **Unit:** extend `tests/` — a test that `commit_processed_files` retries on a simulated
-  `ConflictError` then succeeds after `rebase`; a dispatch-script test asserting the message body
-  shape and that the derived key has no `//` and round-trips through `_timestamp_from_url`.
-- **Dry run (real S3):** dispatch a single known granule, let the Lambda process it, then
-  `xr.open_zarr` the store and assert the written time slice is non-fill — this validates the
-  key resolves on S3 and the end-to-end path.
-- **Post-build validation (design.md):** scan for timesteps whose mean equals the Zarr fill value
-  (indicates a missed write); confirm DLQ is empty; spot-check random chunks against source byte
-ranges.
-
-python scripts/dispatch.py --queue-url https://sqs.us-west-2.amazonaws.com/444055461661/gpmimerg-vz-dp-queue \
-  --start 1998-01-01T00:30 --end 1998-01-07T00:00
+- **Unit (`tests/`):** `commit_processed_files` retries on a simulated `ConflictError` then
+  succeeds after rebase (asserting the solver is `BasicConflictSolver`), and re-raises /
+  propagates `RebaseFailedError` correctly; the credential provider and S3 registry are
+  cached (constructed once); the dispatch message body has no `//` and round-trips through
+  `_timestamp_from_url`.
+- **Dry run (real S3):** dispatch one known granule, let the Lambda process it, then
+  `xr.open_zarr` the store and assert the written slice is non-fill.
+- **Post-build validation — `validate_build.ipynb`:** for a given time range,
+  (1) **completeness** via per-chunk `store.exists(...)` — a metadata HEAD that directly
+  answers whether each region write committed (preferred over a fill-value scan: the Zarr
+  fill is an opaque per-variable sentinel, distinct from the CF `_FillValue` of -9999.9, so
+  value-based detection is unreliable); and (2) a **matching spot-check** that samples random
+  chunks *uniformly across the range* and compares store reads against the source HDF5 read
+  natively with `h5py`. Run it in `us-west-2` (the data reads dereference GES DISC byte
+  ranges, which require same-region access). Confirm DLQ is empty and redrive any stragglers
+  (idempotent).
