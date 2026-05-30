@@ -270,16 +270,25 @@ class Processor:
 
         Many Lambdas commit to ``main`` concurrently. An Icechunk commit is a
         compare-and-swap on the branch tip, so all but one of a set of racing
-        commits raises ``ConflictError``. Every granule writes a *disjoint*
-        ``time`` slice, so the changes never truly overlap and
-        ``ConflictDetector`` replays them cleanly onto the advanced tip; we
-        then retry the commit. Backoff is jittered so a thundering herd of
-        Lambdas spreads its retries out instead of colliding again in lockstep.
+        commits raises ``ConflictError``; we rebase onto the advanced tip and
+        retry. Backoff is jittered so a thundering herd of Lambdas spreads its
+        retries out instead of colliding again in lockstep.
 
-        A genuine overlap surfaces as ``RebaseFailedError`` from ``rebase`` and
-        propagates (retrying wouldn't help). On attempt exhaustion the final
-        ``ConflictError`` propagates too, so the caller fails the batch and SQS
-        redelivers it.
+        Granules usually write *disjoint* ``time`` slices, but SQS is
+        at-least-once and the dispatch is resumable/redrivable, so the *same*
+        granule (hence the same ``time`` index and chunks) can be processed by
+        two batches concurrently. Two such commits racing produce a
+        ``ChunkDoubleUpdate`` conflict, which ``ConflictDetector`` only *detects*
+        (it would raise ``RebaseFailedError`` and abort). Because a duplicate
+        region write is byte-identical to the original, we resolve with
+        ``BasicConflictSolver(on_chunk_conflict=UseOurs)`` — "ours" and "theirs"
+        are the same bytes, so keeping ours is correct.
+
+        Anything ``UseOurs`` can't resolve (e.g. a structural / Zarr-metadata
+        conflict) raises ``RebaseFailedError``; retrying wouldn't help, so we log
+        the conflicting types/paths and propagate. On attempt exhaustion the
+        final ``ConflictError`` propagates too. Either way the caller fails the
+        batch and SQS redelivers it.
         """
         for attempt in range(max_attempts):
             try:
@@ -287,7 +296,18 @@ class Processor:
             except icechunk.ConflictError:
                 if attempt == max_attempts - 1:
                     raise
-                session.rebase(icechunk.ConflictDetector())
+                try:
+                    session.rebase(
+                        icechunk.BasicConflictSolver(
+                            on_chunk_conflict=icechunk.VersionSelection.UseOurs
+                        )
+                    )
+                except icechunk.RebaseFailedError as exc:
+                    conflicts = ", ".join(
+                        f"{c.conflict_type} at {c.path}" for c in exc.conflicts
+                    )
+                    print(f"Rebase failed on unresolvable conflicts: {conflicts}")
+                    raise
                 backoff = min(base_backoff * 2**attempt, max_backoff)
                 time.sleep(backoff * (0.5 + random.random()))
         raise RuntimeError("commit retry loop exited without returning")  # unreachable

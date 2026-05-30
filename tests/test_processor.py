@@ -67,7 +67,8 @@ def test_commit_retries_then_succeeds_after_rebase() -> None:
     assert session.commit.call_count == 3
     assert session.rebase.call_count == 2  # one rebase before each retry
     solver = session.rebase.call_args.args[0]
-    assert isinstance(solver, icechunk.ConflictDetector)
+    # Resolve byte-identical duplicate-chunk writes rather than only detecting them.
+    assert isinstance(solver, icechunk.BasicConflictSolver)
 
 
 def test_commit_reraises_after_exhausting_attempts() -> None:
