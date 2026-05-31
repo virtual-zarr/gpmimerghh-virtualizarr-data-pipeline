@@ -26,7 +26,7 @@ class StackSettings(BaseSettings):
     DATA_BUCKET_NAME: str | None = None
     PROJECT: str = "virtualizarr-data-pipelines"
     SNS_TOPIC: str | None = None
-    MAX_CONCURRENCY: int = 50
+    MAX_CONCURRENCY: int = 15
     SQS_BATCH_SIZE: int = 100
     # SQS -> Lambda batching window (seconds). AWS requires this to be >= 1
     # when SQS_BATCH_SIZE > 10; with a window the poller waits up to this long

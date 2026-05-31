@@ -262,9 +262,9 @@ class Processor:
         self,
         session: Session,
         *,
-        max_attempts: int = 10,
-        base_backoff: float = 0.5,
-        max_backoff: float = 30.0,
+        max_attempts: int = 20,
+        base_backoff: float = 0.25,
+        max_backoff: float = 5,
     ) -> str:
         """Commit the batch's staged region writes, rebasing on conflict.
 

@@ -1,17 +1,16 @@
 # Scale the GPM IMERG HH virtual Icechunk build
 
-Status: **implemented and validated at month scale.** This doc started as a plan; it now
-records what we built, why, and what we learned tuning it. Year-scale is the next test.
+This document records what we built to scale to 28 years of half-hourly data, why, and what we learned tuning it.
 
 ## The core constraint
 
-The pipeline (3-stage SQS + Lambda, `design.md`) writes virtual references for **486,480
-granules** (1998-01-01 → 2025-10-01, every 30 min) into one Icechunk store. Each granule is
-a disjoint `time` slice.
+The pipeline, documented in `design.md`, writes virtual references for **486,480
+granules** (half-hourly files from 1998-01-01 to 2025-10-01) into one Icechunk store.
 
-**Commit throughput is the ceiling, not per-file work.** An Icechunk commit is a
-compare-and-swap on the `main` branch tip, so commits *serialize* — only one batch lands at
-a time. Two consequences drive everything below:
+**Commit throughput determines the max throughput, not per-file work.** An Icechunk commit is a
+compare-and-swap on the `main` branch tip, so commits can only happen serially. Only one batch can be committed at a time.
+
+There are 2 consequences of this:
 
 - **Raising `MAX_CONCURRENCY` does not raise throughput.** More Lambdas just queue at the
   commit point (and pile load on the Earthdata auth endpoint — see below). The real
@@ -20,7 +19,7 @@ a time. Two consequences drive everything below:
   range-reads from GES DISC). Memory is a non-issue: a "chunk" is byte-range metadata, not
   array data.
 
-The manifest is split **one year per shard** (`open_or_create_repo` uses
+The manifest is split **~1 year per shard** (`open_or_create_repo` uses
 `manifest_split_size = 48 * 365 = 17,520`). This matters for scaling: each commit rewrites
 the shard(s) its batch touched, and a shard's rewrite cost grows as it fills.
 
@@ -66,27 +65,22 @@ container, hitting the endpoint roughly once per credential lifetime.
 containers, so the auth-endpoint load scales with `MAX_CONCURRENCY`, not with how many
 granules each container reads. (See the `MAX_CONCURRENCY=1000` lesson below.)
 
-### 3. Infrastructure hardening + tunable knobs — `cdk/`
+### 3. Added more tunable scaling settings in `cdk/`
 
-- **Queue retention** raised to 14 days (`cdk/stack.py`) — the default 4 days would silently
-  drop messages on a multi-day backfill.
-- **Tunable knobs in `cdk/settings.py`** so tuning = redeploy, no code edits:
+- **Tunable settings defined in `cdk/settings.py`**
   `LAMBDA_TIMEOUT`, `LAMBDA_MEMORY`, `VISIBILITY_TIMEOUT`, `MAX_CONCURRENCY`,
   `SQS_BATCH_SIZE`, plus `SQS_MAX_BATCHING_WINDOW`.
-- **SQS batching window** (`SQS_MAX_BATCHING_WINDOW`, default 5 s, wired into the
-  `SqsEventSource`): AWS **requires** a batching window ≥ 1 s once `SQS_BATCH_SIZE > 10`.
-  A `_check_batching_window` validator enforces this; `_check_visibility_timeout` enforces
-  `VISIBILITY_TIMEOUT ≥ LAMBDA_TIMEOUT`.
+    - AWS **requires** a batching window ≥ 1 s once `SQS_BATCH_SIZE > 10`. The SQS Batching Window defines how long a lambda should wait to fill a batch (that is, receive SQS_BATCH_SIZE_MESSAGES) before processing those messages as a batch. A `_check_batching_window` validator enforces this
 
-## Operational lessons (learned the hard way)
+## Operational lessons learned the hard way
 
 - **`VISIBILITY_TIMEOUT ≥ LAMBDA_TIMEOUT`, and let CDK own it.** Hand-editing the SQS
   visibility timeout to 60 s while the Lambda ran longer caused in-flight messages to become
   visible again and be reprocessed *concurrently* → a flood of duplicate same-slice writes →
   the rebase conflicts above (>100 in 10 min). The settings validator guarantees the
-  invariant for CDK-managed deploys; don't bypass it in the console. AWS best practice is
-  ~6× the Lambda timeout for redrive headroom. **Current `300/300` holds the invariant but
-  has zero margin — bump `VISIBILITY_TIMEOUT` toward 900–1800 before pushing batch size.**
+  invariant for CDK-managed deploys. AWS best practice is ~6× the Lambda timeout for redrive headroom.
+  **Current `300/300` holds the invariant but has zero margin**. It is recommended to set
+   `VISIBILITY_TIMEOUT` toward 900–1800 before pushing batch size.**
 - **Keep `MAX_CONCURRENCY` moderate (~50).** At 50 we saw ~10 transient auth errors over a
   full week (self-healing). At **1000** the Earthdata auth endpoint was overwhelmed by ~1000
   simultaneous cold-container credential fetches → widespread `UnauthenticatedError`. Since
@@ -99,12 +93,12 @@ granules each container reads. (See the `MAX_CONCURRENCY=1000` lesson below.)
 
 ## Measured numbers (early in the build, shard nearly empty)
 
-| Config (`conc` / `batch`) | Lambda duration | Throughput | Notes |
+| Config (`MAX_CONCURRENCY` / `SQS_BATCH_SIZE`) | Lambda duration | Throughput | Notes |
 |---|---|---|---|
 | 50 / 25 | ~12 s/batch | 1 week (336) in ~6 min | ~10 transient auth errors |
 | 50 / 100 | well under timeout | 1 week in ~2 min; 1 month (~1,440) in ~10 min | DLQ 0 |
 
-Per-granule ≈ 0.5 s. At `batch 100` that's ~50 s/batch — a ~25× margin under the 300 s
+Per-granule ≈ 0.5 s. At `SQS_BATCH_SIZE=100` that's ~50 s/batch — a ~25× margin under the 300 s
 timeout, so batch size can grow substantially **without** raising the timeout or memory
 (`LAMBDA_MEMORY=4096`). Current deployed config: `MAX_CONCURRENCY=50`, `SQS_BATCH_SIZE=100`,
 `SQS_MAX_BATCHING_WINDOW=5`, `LAMBDA_TIMEOUT=300`, `VISIBILITY_TIMEOUT=300`.
@@ -114,7 +108,7 @@ timeout, so batch size can grow substantially **without** raising the timeout or
 Week and month tests run in a **linear "under-saturated" zone** and will *under-count* the
 full build. Two effects only appear at year scale:
 
-1. **Concurrency saturation.** A month is ~15 batches (`batch 100`) against 50 slots —
+1. **Concurrency saturation.** A month is ~15 batches (when `SQS_BATCH_SIZE=100`) against 50 slots —
    fully parallel, lots of idle capacity. A year is ~175 batches → ~3–4 waves on 50
    concurrency, *and* all 175 commits serialize on `main`. Small tests never exercise this.
 2. **Shard fill.** A month fills only ~8% of one annual shard, so commits stay cheap the
@@ -132,11 +126,6 @@ memory headroom, and DLQ depth (must stay 0). Because each year fills its own sh
 empty, the per-year cost curve roughly repeats — so a year's curve is what to extrapolate
 the ~28-year build from, not a week's average. If commit cost keeps climbing toward year-end,
 raise `SQS_BATCH_SIZE` (fewer commits per shard) before running the whole thing.
-
-Advanced lever (only if single-branch commit throughput proves unacceptable after tuning):
-Icechunk's distributed `Session.fork`/merge commits many region writes at once, but it needs
-a coordinator and doesn't fit the per-batch-Lambda model — a separate execution path, out of
-scope unless the year-scale runbook shows we need it.
 
 ## Dispatch script — `scripts/dispatch.py`
 

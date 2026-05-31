@@ -64,7 +64,7 @@ class VirtualizarrSqsStack(Stack):
             self,
             f"{settings.STACK_NAME}-Dlq",
             queue_name=f"{settings.STACK_NAME}-Dlq",
-            retention_period=Duration.days(14),
+            retention_period=Duration.days(4),
         )
 
         self.queue = sqs.Queue(
@@ -72,9 +72,7 @@ class VirtualizarrSqsStack(Stack):
             f"{settings.STACK_NAME}-queue",
             queue_name=f"{settings.STACK_NAME}-queue",
             visibility_timeout=Duration.seconds(settings.VISIBILITY_TIMEOUT),
-            # A full backfill enqueues ~486k messages and runs for days; without
-            # this the SQS default (4 days) would silently drop unprocessed ones.
-            retention_period=Duration.days(14),
+            retention_period=Duration.days(4),
             dead_letter_queue=sqs.DeadLetterQueue(
                 max_receive_count=20,
                 queue=self.dlq,
