@@ -43,7 +43,7 @@ COORD_VARIABLES = ["time", "lon", "lat", "time_bnds", "lon_bnds", "lat_bnds"]
 BUCKET = "gesdisc-cumulus-prod-protected"
 STORE_PREFIX = f"s3://{BUCKET}/GPM_L3/GPM_3IMERGHH.07/"
 FILE_PATH = "2025/273/3B-HHR.MS.MRG.3IMERG.20250930-S233000-E235959.1410.V07B.HDF5"
-EXAMPLE_LINK = f"{STORE_PREFIX}/{FILE_PATH}"
+EXAMPLE_LINK = f"{STORE_PREFIX}{FILE_PATH}"
 CREDENTIALS_URL = "https://data.gesdisc.earthdata.nasa.gov/s3credentials"
 
 # TIME VARS
@@ -65,7 +65,8 @@ def url_for(t: datetime) -> str:
         + end.strftime("%H%M%S")
         + f".{minutes_since:04d}.V07B.HDF5"
     )
-    return f"{STORE_PREFIX}/{t.year:04d}/{t.strftime('%j')}/{name}"
+    # STORE_PREFIX already ends in "/", so no separator before the year.
+    return f"{STORE_PREFIX}{t.year:04d}/{t.strftime('%j')}/{name}"
 
 
 @lru_cache(maxsize=1)

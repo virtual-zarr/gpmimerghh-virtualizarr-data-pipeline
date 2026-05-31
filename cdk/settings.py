@@ -26,7 +26,7 @@ class StackSettings(BaseSettings):
     DATA_BUCKET_NAME: str | None = None
     PROJECT: str = "virtualizarr-data-pipelines"
     SNS_TOPIC: str | None = None
-    MAX_CONCURRENCY: int = 15
+    MAX_CONCURRENCY: int = 25
     SQS_BATCH_SIZE: int = 100
     # SQS -> Lambda batching window (seconds). AWS requires this to be >= 1
     # when SQS_BATCH_SIZE > 10; with a window the poller waits up to this long
@@ -41,7 +41,7 @@ class StackSettings(BaseSettings):
     LAMBDA_MEMORY: int = 4096
     # SQS visibility timeout. Must be >= LAMBDA_TIMEOUT so a record isn't
     # redelivered while its batch is still being processed.
-    VISIBILITY_TIMEOUT: int = 900
+    VISIBILITY_TIMEOUT: int = 360
 
     # Freguency in days to run garbage collection.
     GARBAGE_COLLECTION_FREQUENCY: int | None = None

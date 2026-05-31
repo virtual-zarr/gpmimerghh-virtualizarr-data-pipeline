@@ -12,8 +12,7 @@ def test_message_body_shape_and_clean_key() -> None:
     s3 = body["Records"][0]["s3"]
     assert s3["bucket"]["name"] == helpers.BUCKET
     key = s3["object"]["key"]
-    # url_for emits a doubled slash; the message key must be collapsed so it
-    # resolves to the real S3 object.
+    # url_for builds a clean key (no doubled slash) so it resolves on S3.
     assert "//" not in key
     assert key.startswith("GPM_L3/GPM_3IMERGHH.07/")
 

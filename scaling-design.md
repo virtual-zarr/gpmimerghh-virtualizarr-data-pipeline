@@ -2,37 +2,39 @@
 
 This document records what we built to scale to 28 years of half-hourly data, why, and what we learned tuning it.
 
+The pipeline, documented in `design.md`, writes virtual references for **486,480
+granules** (files produced every 30 minutes from 1998-01-01 to 2025-10-01) into one Icechunk store.
+
 ## The core constraint
 
-The pipeline, documented in `design.md`, writes virtual references for **486,480
-granules** (half-hourly files from 1998-01-01 to 2025-10-01) into one Icechunk store.
-
-**Commit throughput determines the max throughput, not per-file work.** An Icechunk commit is a
-compare-and-swap on the `main` branch tip, so commits can only happen serially. Only one batch can be committed at a time.
+**Icechunk commits determine max throughput, not per-file processing.** An Icechunk commit is a
+compare-and-swap on the head of the `main` branch, so commits can only happen serially. Only one
+batch can be committed at a time.
 
 There are 2 consequences of this:
 
-- **Raising `MAX_CONCURRENCY` does not raise throughput.** More Lambdas just queue at the
-  commit point (and pile load on the Earthdata auth endpoint — see below). The real
-  throughput lever is **fewer, larger commits**, i.e. a bigger `SQS_BATCH_SIZE`.
-- **Per-file processing is cheap and network-bound** (~0.5 s/granule — HDF5 header
-  range-reads from GES DISC). Memory is a non-issue: a "chunk" is byte-range metadata, not
-  array data.
+- **Raising `MAX_CONCURRENCY` (the number of lambdas executing concurrently) does not raise throughput.** More Lambdas just queue at the commit point (and may error on the Earthdata auth endpoint, more on that below). The real throughput lever is **fewer, larger commits**, i.e. a bigger `SQS_BATCH_SIZE`.
+- **Per-file processing is relatively cheap and network-bound**. Processing time is ~0.5 s/granule. Processing involves HDF5 header
+  range-reads from the GES DISC Earthdata Cloud bucket. Memory consumption is also minimal, since we are reading byte-range metadata, not array data.
+
+## Other scaling considerations:
 
 The manifest is split **~1 year per shard** (`open_or_create_repo` uses
 `manifest_split_size = 48 * 365 = 17,520`). This matters for scaling: each commit rewrites
-the shard(s) its batch touched, and a shard's rewrite cost grows as it fills.
+the shard(s) its batch touched, so a shard's rewrite cost grows as the shard grows.
 
 ## What we changed (and why)
 
-### 1. Rebase-resolve commit — `Processor.commit_processed_files` (processor.py)
+While scaling, the following changes were made:
+
+### 1. Resolve rebase conflicts during commit — `Processor.commit_processed_files` (processor.py)
 
 The original bare `session.commit()` meant any concurrent commit conflict failed the whole
-batch → SQS redelivery → eventually DLQ. We added a bounded, jittered-backoff retry loop
-that rebases on `ConflictError` and retries the commit.
+batch, resulting in SQS redelivery.
 
-The important subtlety: **the rebase solver must *resolve*, not just *detect*.**
-`ConflictDetector` only detects — on any conflict it raises `RebaseFailedError`
+2 changes were made to prevent SQS redeliver:
+
+Frist, **the commit_processed_files includes a conflict solver that *resolves*, rather than just *detects* conflicts.** `ConflictDetector` always raises `RebaseFailedError`
 ("Snapshot cannot be rebased. Aborting rebase"). We instead use:
 
 ```python
@@ -41,48 +43,36 @@ session.rebase(icechunk.BasicConflictSolver(
 ))
 ```
 
-Why this is needed and safe: granules *usually* write disjoint slices, but SQS is
-at-least-once and the dispatch is resumable/redrivable, so the **same** granule (same
-`time` index, same chunks) can be processed by two batches concurrently. Two such commits
-racing produce a `ChunkDoubleUpdate`, which `ConflictDetector` refuses. Because a duplicate
-region write is **byte-identical** to the original (same source byte ranges), "ours" and
-"theirs" are the same bytes — `UseOurs` resolves it cleanly. Anything `UseOurs` can't
-resolve (a structural / Zarr-metadata conflict) re-raises `RebaseFailedError`; we log the
-conflicting `conflict_type`/`path` and propagate so the batch redelivers (retrying wouldn't
-help). Attempt exhaustion re-raises the `ConflictError` for the same reason.
+We don't expect to encounter a chunk conflict error except in a race condition. The pipeline is designed to only be writing disjoint slices. However, there is a chance that the same message for the same granule is being processed by 2 lambdas at once. This is because SQS guarantees deliver "at least once", so it could redeliver. Further, if messages could be redelivered if the SQS visibility timeout is less than the Lambda timeout (although this is prevented with a validation step in the CDK code, manual changes could happen). A race condition where the same granule is being processed by 2 concurrent lambdas could result in a `ChunkDoubleUpdate` error. The writes should be identical, so it is safe to use the `UseOurs` rule when this race condistion happens.
+
+Second, a bounded, jittered-backoff retry loop will retry any  `ConflictError` errors. When lambdas are creating sessions and committing around the same time, it can cause an "Failed to commit, expected parent: XXX, actual parent YYY" type error. When this happens, the commit is retried up to `max_attempts` with backoff and jitter parameters. The first attempt happens quickly, and the wait between attempts grows exponentially up to `max_backoff`.
 
 ### 2. Cache the Earthdata credential provider — `helpers.py`
 
-Reading a source granule makes obstore mint temporary S3 credentials from the Earthdata
-`s3credentials` endpoint. Building a fresh `NasaEarthdataCredentialProvider` + `S3Store`
-**per granule** defeated obstore's credential cache, so the endpoint was hit once per
-granule → bursts that intermittently failed with `UnauthenticatedError` (surfaced as a
+Request bursts intermittently fail with `UnauthenticatedError` (surfaced as a
 wrapped `SystemError` crossing the Rust/Python boundary). We memoize both with
 `@lru_cache(maxsize=1)`, so one provider + store are reused across the whole batch in a warm
 container, hitting the endpoint roughly once per credential lifetime.
 
 **Caveat that bounds concurrency:** the cache is *per process*. It does nothing across
 containers, so the auth-endpoint load scales with `MAX_CONCURRENCY`, not with how many
-granules each container reads. (See the `MAX_CONCURRENCY=1000` lesson below.)
+granules each container reads.
 
-### 3. Added more tunable scaling settings in `cdk/`
+### 3. Added more configurable scaling settings in `cdk/`
 
-- **Tunable settings defined in `cdk/settings.py`**
-  `LAMBDA_TIMEOUT`, `LAMBDA_MEMORY`, `VISIBILITY_TIMEOUT`, `MAX_CONCURRENCY`,
-  `SQS_BATCH_SIZE`, plus `SQS_MAX_BATCHING_WINDOW`.
-    - AWS **requires** a batching window ≥ 1 s once `SQS_BATCH_SIZE > 10`. The SQS Batching Window defines how long a lambda should wait to fill a batch (that is, receive SQS_BATCH_SIZE_MESSAGES) before processing those messages as a batch. A `_check_batching_window` validator enforces this
+The following **settings were added to `cdk/settings.py`: `LAMBDA_TIMEOUT`, `LAMBDA_MEMORY`, `VISIBILITY_TIMEOUT`, and `SQS_MAX_BATCHING_WINDOW`. This is in addition to the exsiting tunable settings `MAX_CONCURRENCY`, `SQS_BATCH_SIZE` and `GARBAGE_COLLECTION_FREQUENCY`.
 
-## Operational lessons learned the hard way
+AWS **requires** a batching window ≥ 1 s once `SQS_BATCH_SIZE > 10`. The SQS Batching Window defines how long a lambda should wait to fill a batch (that is, receive `SQS_BATCH_SIZE` number of messages) before processing those messages as a batch. A `_check_batching_window` validate ensures `SQS_MAX_BATCHING_WINDOW` is set when `SQS_BATCH_SIZE > 10`.
 
-- **`VISIBILITY_TIMEOUT ≥ LAMBDA_TIMEOUT`, and let CDK own it.** Hand-editing the SQS
-  visibility timeout to 60 s while the Lambda ran longer caused in-flight messages to become
-  visible again and be reprocessed *concurrently* → a flood of duplicate same-slice writes →
-  the rebase conflicts above (>100 in 10 min). The settings validator guarantees the
-  invariant for CDK-managed deploys. AWS best practice is ~6× the Lambda timeout for redrive headroom.
-  **Current `300/300` holds the invariant but has zero margin**. It is recommended to set
-   `VISIBILITY_TIMEOUT` toward 900–1800 before pushing batch size.**
+## Operational lessons learned
+
+- **`VISIBILITY_TIMEOUT ≥ LAMBDA_TIMEOUT`** Allowing the SQS
+  visibility timeout to be less than the Lambda timeout causes in-flight messages to become
+  visible again and be reprocessed *concurrently*. This results in a flood of duplicate same-slice writes.
+  A settings validator guarantees `VISIBILITY_TIMEOUT ≥ LAMBDA_TIMEOUT` when deploying via CDK-managed.
+  AWS best practice is ~6× the Lambda timeout for redrive headroom.
 - **Keep `MAX_CONCURRENCY` moderate (~50).** At 50 we saw ~10 transient auth errors over a
-  full week (self-healing). At **1000** the Earthdata auth endpoint was overwhelmed by ~1000
+  week of granules (self-healing). At **1000** the Earthdata auth endpoint was overwhelmed by ~1000
   simultaneous cold-container credential fetches → widespread `UnauthenticatedError`. Since
   concurrency buys no throughput (commits serialize) and *aggravates* both auth load and
   rebase churn, there's no reason to go high.
@@ -91,55 +81,50 @@ granules each container reads. (See the `MAX_CONCURRENCY=1000` lesson below.)
   amortized over the batch). The cap: `batch_size × per_granule_time` must finish within the
   timeout with margin.
 
-## Measured numbers (early in the build, shard nearly empty)
+## Measured numbers
 
 | Config (`MAX_CONCURRENCY` / `SQS_BATCH_SIZE`) | Lambda duration | Throughput | Notes |
 |---|---|---|---|
-| 50 / 25 | ~12 s/batch | 1 week (336) in ~6 min | ~10 transient auth errors |
-| 50 / 100 | well under timeout | 1 week in ~2 min; 1 month (~1,440) in ~10 min | DLQ 0 |
+| 50 / 25 | rough estimate of ~12 s/batch | 1 week (336 granules) processed in ~6 min | ~10 transient auth errors |
+| 50 / 100 | under timeout | 1 week in ~2 min; 1 month (~1,440) in ~10 min | DLQ 0 |
+| 50 / 100 | some timeouts | 5 years in ~7 hours | DLQ 1,131 |
+| 25 / 100 | 99th percentile ~3 minutes; 50th percentile ~1 minute | 1 year | DLQ 0 |
 
-Per-granule ≈ 0.5 s. At `SQS_BATCH_SIZE=100` that's ~50 s/batch — a ~25× margin under the 300 s
-timeout, so batch size can grow substantially **without** raising the timeout or memory
-(`LAMBDA_MEMORY=4096`). Current deployed config: `MAX_CONCURRENCY=50`, `SQS_BATCH_SIZE=100`,
-`SQS_MAX_BATCHING_WINDOW=5`, `LAMBDA_TIMEOUT=300`, `VISIBILITY_TIMEOUT=300`.
+At `SQS_BATCH_SIZE=100`, processing time is well under the 300 second timeout. So batch size can grow substantially **without** raising the timeout or memory (`LAMBDA_MEMORY=4096`).
 
-## Scaling regimes — why small-scale numbers over-promise
+Average memory use was ~2000MB, with max memory used 2609. So we could safely reduce memory to 3000 MB.
 
-Week and month tests run in a **linear "under-saturated" zone** and will *under-count* the
-full build. Two effects only appear at year scale:
+This was determined by running the following query in CloudWatch Log Insights for the processing lambdas CloudWatch Logs:
 
-1. **Concurrency saturation.** A month is ~15 batches (when `SQS_BATCH_SIZE=100`) against 50 slots —
-   fully parallel, lots of idle capacity. A year is ~175 batches → ~3–4 waves on 50
-   concurrency, *and* all 175 commits serialize on `main`. Small tests never exercise this.
-2. **Shard fill.** A month fills only ~8% of one annual shard, so commits stay cheap the
-   whole time. A year fills a shard 0 → 17,520 refs, and each commit rewrites it, so commit
-   duration **climbs** across the run.
 
-So a clean ~8–10 min month confirms "still in the linear zone," **not** that the full build
-is linear. Rough throughput model: `total ≈ max(reads: granules·per_granule/concurrency,
-commits: (granules/batch_size)·commit_cycle)`. At scale the commit term dominates and grows
-with shard fill; bigger batches shrink it.
+```sql
+filter @type = "REPORT"
+    | stats max(@memorySize / 1000 / 1000) as provisonedMemoryMB,
+        min(@maxMemoryUsed / 1000 / 1000) as smallestMemoryRequestMB,
+        avg(@maxMemoryUsed / 1000 / 1000) as avgMemoryUsedMB,
+        max(@maxMemoryUsed / 1000 / 1000) as maxMemoryUsedMB,
+        provisonedMemoryMB - maxMemoryUsedMB as overProvisionedMB
+```
 
-**Next test: a full year (1998, 17,520 msgs).** Watch in CloudWatch: total time, the
-**commit-duration trend** as the shard fills (the key signal), Lambda duration vs timeout,
-memory headroom, and DLQ depth (must stay 0). Because each year fills its own shard from
-empty, the per-year cost curve roughly repeats — so a year's curve is what to extrapolate
-the ~28-year build from, not a week's average. If commit cost keeps climbing toward year-end,
-raise `SQS_BATCH_SIZE` (fewer commits per shard) before running the whole thing.
+## Why performance at lower temporal ranges won't scale linearly
+
+Tests at relatively small scale (say a week or month) do not saturate resources as currently configured. Two effects only appear at scale:
+
+1. **Concurrency saturation.** When the number of batches is below `MAX_CONCURRENCY` there is idle capacity.
+2. **Shard fill.** As the shard fills from 0 → 17,520 refs commit duration is expected to increase. In practice, some increased duration has been observed but it does not appear significant.
 
 ## Dispatch script — `scripts/dispatch.py`
 
-Pure enumeration + SQS sends; no HDF5 reads, no AWS compute. Runs locally with
-`sqs:SendMessage` and the queue URL.
+The dispatch script enumerates files and dispatches messages to SQS. There is no reading from the files so it can be run from a local laptop not on AWS.
 
-- Iterates `t` over half-open `[--start, --end)` in 30-min steps; builds the URL via
+### What the dispatch script does
+- Iterates over half-open `[--start, --end)` in 30-min steps; builds the URL via
   `helpers.url_for(t)`, derives `bucket`/`key`, **collapsing the doubled `//`** that
   `url_for` emits (STORE_PREFIX ends in `/`) so the key resolves on S3.
-- Body shape matches the handler: `{"Records":[{"s3":{"bucket":{"name":BUCKET},
-  "object":{"key":key}}}]}` (sent direct to SQS, not SNS-wrapped).
-- Sends via `sqs.send_message_batch` (10/call — SQS max; independent of `SQS_BATCH_SIZE`,
-  which is how many records the Lambda *pulls*). Thread pool of ~10–20 workers.
-- **Resumable:** checkpoints the last-enqueued timestamp locally so a crash resumes without
+- Message body schema: `{"Records":[{"s3":{"bucket":{"name":BUCKET},
+  "object":{"key":key}}}]}`.
+- Sends via `sqs.send_message_batch`. It sends 10 per call, which is the SQS max and independent of `SQS_BATCH_SIZE`, using a thread pool of ~10–20 workers.
+- **Resumable:** The dispatch script checkpoints the last-enqueued timestamp locally so a crash resumes without
   double-enqueueing (duplicates are harmless — region writes are idempotent and the rebase
   solver resolves concurrent ones — just wasteful).
 
@@ -151,21 +136,34 @@ python scripts/dispatch.py \
   --start 1998-03-25T23:30:00 --end 1999-03-26T00:00
 ```
 
-## Verification
+## Post-build validation
 
-- **Unit (`tests/`):** `commit_processed_files` retries on a simulated `ConflictError` then
-  succeeds after rebase (asserting the solver is `BasicConflictSolver`), and re-raises /
-  propagates `RebaseFailedError` correctly; the credential provider and S3 registry are
-  cached (constructed once); the dispatch message body has no `//` and round-trips through
-  `_timestamp_from_url`.
-- **Dry run (real S3):** dispatch one known granule, let the Lambda process it, then
-  `xr.open_zarr` the store and assert the written slice is non-fill.
-- **Post-build validation — `validate_build.ipynb`:** for a given time range,
-  (1) **completeness** via per-chunk `store.exists(...)` — a metadata HEAD that directly
-  answers whether each region write committed (preferred over a fill-value scan: the Zarr
-  fill is an opaque per-variable sentinel, distinct from the CF `_FillValue` of -9999.9, so
-  value-based detection is unreliable); and (2) a **matching spot-check** that samples random
-  chunks *uniformly across the range* and compares store reads against the source HDF5 read
-  natively with `h5py`. Run it in `us-west-2` (the data reads dereference GES DISC byte
-  ranges, which require same-region access). Confirm DLQ is empty and redrive any stragglers
-  (idempotent).
+A superficial way to validate all messages were processed is to check the dead-letter queue is empty. However, this isn't very reassuring on its own.
+
+The `validate_build.ipynb` notebook provides a more thorough validation, albeit not exhaustive. For a given temporal range, it performs:
+
+1. **a completeness check** via per-chunk `store.exists(...)` — a metadata HEAD that directly
+  answers whether each region write committed, and,
+1. **a spot-check** that samples random chunks uniformly across the range and compares store reads against the source HDF5 read
+  natively with `h5py`. This section must be run in `us-west-2` as it will read from the GES DISC Earthdata Cloud bucket which require same-region access.
+
+## Recovery
+
+If validation turns up missing timesteps, it is safe to re-dispatch those timesteps as region writes are idempotent.
+
+> [!Note]
+> The completeness scan counts missing *chunks*, so one missing timestep shows up as **4 missing chunks**. The DLQ counts *messages* — one per granule
+(= one timestep). So divide the chunk count by 4 before comparing.
+
+Two ways to redrive:
+
+- **SQS console DLQ redrive (TESTED)** (`Start DLQ redrive` / `StartMessageMoveTask`) — moves messages
+  *physically in the DLQ* back to the source queue. Zero code, simplest. **Sufficient when
+  missing-timesteps==DLQ count** (no silent loss). Limited to what's in the DLQ, and subject
+  to DLQ retention (messages age out).
+- **Notebook-driven redrive (UNTESTED)** (`validate_build.ipynb`, Section 3) — derives the missing set from
+  `store.exists(...)`, dedupes to unique time indices, and re-sends one SQS message per missing
+  timestep (same body as `dispatch.py`).
+
+Rule of thumb: if missing-timesteps == DLQ count, use the console (easier); if missing > DLQ,
+the queue isn't the source of truth — the store is — so redrive from the scan.

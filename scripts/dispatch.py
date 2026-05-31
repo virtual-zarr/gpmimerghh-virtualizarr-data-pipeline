@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
@@ -39,7 +38,6 @@ from virtualizarr_processor import helpers
 
 STEP = timedelta(minutes=30)
 SQS_MAX_BATCH = 10  # SQS send_message_batch hard limit
-_MULTISLASH = re.compile(r"/{2,}")
 
 
 def _iter_timestamps(start: datetime, end: datetime) -> Iterator[datetime]:
@@ -51,16 +49,12 @@ def _iter_timestamps(start: datetime, end: datetime) -> Iterator[datetime]:
 
 
 def message_body(t: datetime) -> str:
-    """SQS body in the shape ``process_notification`` expects (handler.py).
-
-    ``helpers.url_for`` emits a doubled slash (STORE_PREFIX ends in ``/``); we
-    collapse it so the key resolves to the real S3 object.
-    """
+    """SQS body in the shape ``process_notification`` expects (handler.py)."""
     url = helpers.url_for(t)
     prefix = f"s3://{helpers.BUCKET}/"
     if not url.startswith(prefix):
         raise ValueError(f"unexpected url for {t!r}: {url}")
-    key = _MULTISLASH.sub("/", url[len(prefix) :])
+    key = url[len(prefix) :]
     return json.dumps(
         {
             "Records": [
