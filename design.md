@@ -4,6 +4,8 @@
 
 This document describes a cloud pipeline that builds a virtual Icechunk store covering the [GPM IMERG Final Precipitation L3 Half Hourly 0.1° × 0.1° V07 (GPM_3IMERGHH)](https://disc.gsfc.nasa.gov/datasets/GPM_3IMERGHH_07/summary) dataset.
 
+Reference: [Original Github request](https://github.com/MAAP-Project/Community/issues/1281)
+
 ## Goals
 
 - Produce a single analysis-ready cloud-optimized (ARCO) data cube spanning the full GPM_3IMERGHH dataset record (1998-01-01 to 2025-09-30).
@@ -13,7 +15,7 @@ This document describes a cloud pipeline that builds a virtual Icechunk store co
 
 ## Non-goals
 
-At time of writing, it is _not_ a goal to create an ongoing icechunk store using the late or early run GPM IMERG product. This may change if it is determined such an ongoing dataset would be useful to users (see [original Github request](https://github.com/MAAP-Project/Community/issues/1281)).
+It is _not_ a goal to create an ongoing icechunk store using the late (or early) GPM IMERG product.
 
 The [first FAQ on this page](https://gpm.nasa.gov/data/imerg) describes the different (final, early, and late) GPM IMERG products.
 
@@ -52,8 +54,8 @@ The second fill value concept, the "sentinel value - (e.g., CF _FillValue ))" is
 
 ## Dropped variables and stored variables
 
-* **Dropped:** `Intermediate`, `nv`, `lonv`, `latv` — not useful at the analysis-ready cube level.
-* **Native:** `time`, `lon`, `lat` plus bounds (`time_bnds`, `lon_bnds`, `lat_bnds`) are stored as native Zarr arrays so opening the dataset doesn't pay to materialize coords through virtual refs. These are handled differently in Stage 0 vs Stage 2: Stage 0 writes them at full length *before* any region is written; Stage 2 region writes leave them alone.
+* **Dropped:** `Intermediate`, `nv`, `lonv`, `latv` — are dropped as not useful at the analysis-ready cube level.
+* **Native:** `time`, `lon`, `lat` plus bounds (`time_bnds`, `lon_bnds`, `lat_bnds`) are stored as native Zarr arrays so opening the dataset doesn't require materializing coordinates through virtual references. These are handled differently during initializing vs processing messages. During initialization, coordinate arrays are written at full length *before* any region is written. During the region-writing stage, the coordinate arrays are untouched.
 
 ## Final virtual Icechunk store
 
@@ -77,7 +79,7 @@ total virtual chunks = 40,864,320
 
 This is a lesson [from the store created with icechunk v1 over a year ago](https://github.com/earth-mover/icechunk-nasa/blob/main/design-docs/icechunk-stores.md): a single monolithic manifest does not scale. At 11 years of data, v1 produced a ~3 GB manifest that had to be fully downloaded on every open and every append.
 
-**Strategy.** Split manifests 1 per year per array. Use the chunk position along `time`, with one shard per year. NB: This split will not be perfectly aligned with years because of leap years.
+**Strategy:** Split manifests ~1 per year per array. The shards are filled up using the chunk position along the `time` dimension (per array this works out to: `time index // 17520 = per array shard index`). NB: This split will not be perfectly aligned with years because of leap years.
 
 ```python
 import icechunk as ic
@@ -98,35 +100,26 @@ config.manifest = ic.ManifestConfig(splitting=splitting, preload=preload)
 
 This produces:
 
-**TODO:** Verify the 3rd and 4th bullet below.
-
 - **28 shards per array × 4 arrays = 112 data manifests.**
 - ~420,480 refs per shard (17520 timesteps × 24 lon-chunks).
-- Roughly **80–200 MB per shard** in Icechunk 2.x's Arrow-style manifest format.
-- A small, separately-stored coordinate manifest (<10 MB).
 
-**Why this works.** Opening the store with `xr.open_zarr` only needs the array metadata and the coordinate manifest. Reading a slice loads exactly the shard(s) covering that time range, in parallel. Appending a new year touches one shard per array, not the whole record.
+**Why this works:** Opening the store with `xr.open_zarr` only needs the array metadata and the coordinate manifest. Reading a slice loads exactly the shard(s) covering that time range, in parallel. Appending a new year touches one shard per array, not the whole record.
 
 **Critical**: Splitting must be set on the `RepositoryConfig` *before the first write*. If you ever need to retrofit, `rewrite_manifests` lets you re-split an existing repo at the cost of one rewrite.
 
 # Cloud architecture: `virtualizarr-data-pipelines`
 
-## Why `virtualizarr-data-pipelines`
+## Why `virtualizarr-data-pipelines`?
 
 Generating this store means writing references for ~40 million chunks. `virtualizarr-data-pipelines` (VDP) solves three issues that come with that scale:
 
 1. **Snapshot explosion.** A naive one-commit-per-day cadence produces ~10,000 snapshots. VDP runs scheduled garbage collection so we can keep that under control. Final files-per-commit is TBD.
 2. **Concurrency + batching.** VDP exposes `MAX_CONCURRENCY` and `SQS_BATCH_SIZE`, which together reduce total commit count and the odds of write conflicts.
-3. **Failure retries.** Failed batches go to a DLQ with redrive and structured logging.
-
-## Knobs
-
-* `GARBAGE_COLLECTION_FREQUENCY`: Freguency in days to run garbage collection.
-* `SQS_BATCH_SIZE`: The maximum number of records to send to the function in each batch ([ref](https://docs.amazonaws.cn/en_us/lambda/latest/dg/services-sqs-configure.html))
+3. **Failure retries.** Failed batches go to a dead-letter queue (DLQ) which comes with redrive (requeueing to the original queue).
 
 ## Why region writes (instead of append)
 
-GPM_3IMERGHH filenames are **deterministic** (see [`helpers.url_for`](./notebooks/helpers.py)) — each file maps to exactly one time index, computable from the filename alone. Workers can write refs in in any order. Region writes are also idempotent on retry, whereas serial `append_dim` writes have to track ordering to avoid skipped or duplicated indices.
+GPM_3IMERGHH filenames are **deterministic**. Each file maps to exactly one time index, computable from the filename alone. Workers can write refs in in any order. Region writes are also idempotent on retry, whereas serial `append_dim` writes have to track ordering to avoid skipped or duplicated indices.
 
 ## Three-stage pipeline
 
@@ -153,8 +146,8 @@ GPM_3IMERGHH filenames are **deterministic** (see [`helpers.url_for`](./notebook
                                   │
                                   ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│ Stage 2 — Region writes (VDP, runs at SQS scale)                    │
-│   • VDP polls SQS in batches of SQS_BATCH_SIZE                      │
+│ Stage 2 — Region writes                     │
+│   • The VDP process_messages lambda polls SQS in batches of SQS_BATCH_SIZE │
 │   • Authenticate to Earthdata, fetch short-lived S3 creds (once     │
 │     per Lambda cold start, refresh via NasaEarthdataCredentialProvider) │
 │   • For each file in the batch:                                     │
@@ -167,19 +160,15 @@ GPM_3IMERGHH filenames are **deterministic** (see [`helpers.url_for`](./notebook
 
 ### Stage 0 — Initialize
 
-[`template_repo.py`](template_repo.py) defines `initialize_repo()`, which becomes the `Processor.initialize_repo` method in `virtualizarr_processor.processor`. VDP calls it from both the [trigger-once initialize handler](https://github.com/developmentseed/virtualizarr-data-pipelines/blob/main/lambda/initialize/handler.py) ([trigger-once custom resource](https://github.com/developmentseed/virtualizarr-data-pipelines/blob/main/cdk/stack.py#L157-L178)) and the per-batch `process_messages` handler. The function is idempotent (`_is_initialized` checks the commit ancestry), so only the first invocation actually writes the template.
+The `Processor.initialize_repo` method in `virtualizarr_processor.processor` is called from both the [trigger-once initialize handler](https://github.com/developmentseed/virtualizarr-data-pipelines/blob/main/lambda/initialize/handler.py) (via the [trigger-once custom resource](https://github.com/developmentseed/virtualizarr-data-pipelines/blob/main/cdk/stack.py#L157-L178)) and the per-batch `process_messages` handler. The function is idempotent (`_is_initialized` checks the commit ancestry), so only the first invocation actually writes the template.
 
 ### Stage 1 — Dispatch messages to the queue
 
 A one-off script enumerates the timestamps (no listing required — see "Why region writes" above) and pushes messages in the format VDP's [`process_notification`](https://github.com/developmentseed/virtualizarr-data-pipelines/blob/main/lambda/process_messages/handler.py#L21-L42) handler expects. Standard S3 Inventory isn't an option since we don't own the source bucket.
 
-**TODO:** Write and test the dispatch script.
-
 ### Stage 2 — Region writes
 
 The batch loop is handled by Powertools' [`BatchProcessor`](https://fiserv.github.io/aws-lambda-powertools-python/develop/utilities/batch/) ([see VDP usage](https://github.com/developmentseed/virtualizarr-data-pipelines/blob/main/lambda/process_messages/handler.py#L17)) with `SQS_BATCH_SIZE` files per Lambda. Region writes don't need ordering within a batch.
-
-**TODO:** Wire [`write_day.py`](./write_day.py)'s `process_file` into `virtualizarr_processor.processor`.
 
 ## Additional Requirements
 
@@ -193,19 +182,7 @@ The NASA bucket needs short-lived S3 credentials via `https://data.gesdisc.earth
 
 ### Failure handling
 
-Region writes are *idempotent* — re-running a file overwrites the same chunk refs with the same byte ranges. Failed batches land in VDP's DLQ; retry == redrive.
-
-### Validation
-
-Validate after building by scanning for any timesteps that have an average of the Zarr fill value.
-
-## Memory budget
-
-| stage | workload | peak memory per worker |
-|---|---|---|
-| Stage 0 — Initialize Repo | One process, builds the 486,480-element time array, opens one sample granule for metadata, writes coord arrays | < 500 MB |
-| Stage 1 — Dispatch | Iterates ~486k timestamps, builds URLs, sends SQS messages in batches. No HDF5 reads, no virtual refs in memory. | < 128 MB |
-| Stage 2 — Region writes (VDP) | `SQS_BATCH_SIZE` files × 84 virtual refs each, plus icechunk session state for the batch's commit. At batch size 48 ≈ 4,032 refs. | < 1 GB (2 GB Lambda is comfortable) |
+Region writes are *idempotent* — re-running a file overwrites the same chunk refs with the same byte ranges. Failed batches land in VDP's DLQ which can be retried via redrive.
 
 ## Fallback: staged + serial commits
 
@@ -215,9 +192,8 @@ If `virtualizarr.to_icechunk(..., region=...)` doesn't work as advertised, fall 
 
 Following the TODOs listed above:
 
-- [ ] **Single-Lambda dry run:** One Lambda writes one day's 48 refs into a fresh repo with splitting configured. Open with `xr.open_zarr` and verify.
-- [ ] **Year-scale:** run all of 1998 (~365 Lambdas), measure per-shard manifest size, validate read latency on a random slice.
-- [ ] **Concurrency stress:** run 5,000 Lambdas concurrently (5 years) and confirm the merge step holds up.
+- [x] **Single-Lambda dry run:** One Lambda writes one day's 48 refs into a fresh repo with splitting configured. Open with `xr.open_zarr` and verify.
+- [x] **Year-scale:** run all of 1998 (~365 Lambdas), measure per-shard manifest size, validate read latency on a random slice.
 - [ ] **Full build:** all 486k files.
 - [ ] **Validation:** scan for fill-value-heavy slices indicating failed writes; spot-check 100 random chunks against original HDF5 byte ranges.
 - [ ] **Read-performance benchmark:** time-series at a point, global mean at a single timestep, regional subset over 1 year. Compare vs. opening individual HDF5 files.
