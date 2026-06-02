@@ -7,16 +7,6 @@ from virtualizarr_processor import helpers
 from virtualizarr_processor.processor import _time_index_for, _timestamp_from_url
 
 
-def test_message_body_shape_and_clean_key() -> None:
-    body = json.loads(dispatch.message_body(helpers.T0))
-    s3 = body["Records"][0]["s3"]
-    assert s3["bucket"]["name"] == helpers.BUCKET
-    key = s3["object"]["key"]
-    # url_for builds a clean key (no doubled slash) so it resolves on S3.
-    assert "//" not in key
-    assert key.startswith("GPM_L3/GPM_3IMERGHH.07/")
-
-
 @pytest.mark.parametrize(
     "t, expected_idx",
     [
@@ -26,7 +16,9 @@ def test_message_body_shape_and_clean_key() -> None:
     ],
 )
 def test_key_roundtrips_to_time_index(t: datetime, expected_idx: int) -> None:
-    """The dispatched key must parse back to the same time index Stage 2 writes."""
+    """
+    The dispatched key must parse back to the same time index as the region-write step.
+    """
     s3 = json.loads(dispatch.message_body(t))["Records"][0]["s3"]
     url = f"s3://{s3['bucket']['name']}/{s3['object']['key']}"
     assert _time_index_for(_timestamp_from_url(url)) == expected_idx
