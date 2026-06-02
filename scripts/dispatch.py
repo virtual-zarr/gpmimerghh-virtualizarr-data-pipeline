@@ -150,12 +150,16 @@ def main(argv: list[str] | None = None) -> int:
 
     checkpoint = Path(args.checkpoint)
     resume_after: datetime | None = None
+    # only set resume_after to the dispatch checkpoint if it exists and we're not
+    # overriding the checkpoint functionality with `no_resume`
     if checkpoint.exists() and not args.no_resume and not args.dry_run:
+        # resume_after ~ only process granules after this datetime
         resume_after = datetime.fromisoformat(checkpoint.read_text().strip())
         print(f"Resuming after checkpoint {resume_after.isoformat()}")
 
     def timestamps() -> Iterator[datetime]:
         for t in _iter_timestamps(args.start, args.end):
+            # only include this timestep if it after resume_after
             if resume_after is None or t > resume_after:
                 yield t
 
@@ -177,6 +181,8 @@ def main(argv: list[str] | None = None) -> int:
     sqs = boto3.client("sqs", region_name=args.region)
     sent = 0
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
+        # send messages in batches of size `SQS_MAX_BATCH` in waves
+        # of size `wave_batches`. Each wave results in a new checkpoint.
         for wave in _chunked(_chunked(timestamps(), SQS_MAX_BATCH), args.wave_batches):
             futures = [
                 pool.submit(_send_batch, sqs, args.queue_url, batch) for batch in wave
