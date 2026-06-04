@@ -1,6 +1,6 @@
 # Scale the GPM IMERG HH virtual Icechunk build
 
-This document records what was built to scale to 28 years of half-hourly data, why, and what was learned tuning it.
+This document records what was built and tuned to scale to 28 years of half-hourly data.
 
 The pipeline, documented in `design.md`, writes virtual references for **486,480
 granules** (files produced every 30 minutes from 1998-01-01 to 2025-10-01) into one Icechunk store.
@@ -53,22 +53,29 @@ granules each container reads.
 
 ### 3. Added more configurable scaling settings in `cdk/`
 
-The following **settings were added to `cdk/settings.py`: `LAMBDA_TIMEOUT`, `LAMBDA_MEMORY`, `VISIBILITY_TIMEOUT`, and `SQS_MAX_BATCHING_WINDOW`. This is in addition to the exsiting tunable settings `MAX_CONCURRENCY`, `SQS_BATCH_SIZE` and `GARBAGE_COLLECTION_FREQUENCY`.
+The following **settings were added to `cdk/settings.py`: `LAMBDA_TIMEOUT`,
+`LAMBDA_MEMORY`, `VISIBILITY_TIMEOUT`, and `SQS_MAX_BATCHING_WINDOW`. This is in
+addition to the exsiting tunable settings `MAX_CONCURRENCY`, `SQS_BATCH_SIZE` and
+`GARBAGE_COLLECTION_FREQUENCY`.
 
-AWS **requires** a batching window ≥ 1 s once `SQS_BATCH_SIZE > 10`. The SQS Batching Window defines how long a lambda should wait to fill a batch (that is, receive `SQS_BATCH_SIZE` number of messages) before processing those messages as a batch. A `_check_batching_window` validate ensures `SQS_MAX_BATCHING_WINDOW` is set when `SQS_BATCH_SIZE > 10`.
+AWS **requires** a batching window ≥ 1 second once `SQS_BATCH_SIZE > 10`. The SQS Batching
+Window defines how long a lambda should wait to fill a batch (that is, receive
+`SQS_BATCH_SIZE` number of messages) before processing those messages as a batch. A
+`_check_batching_window` validate ensures `SQS_MAX_BATCHING_WINDOW` is set when
+`SQS_BATCH_SIZE > 10`.
 
 ## Operational lessons learned
 
 - **`VISIBILITY_TIMEOUT ≥ LAMBDA_TIMEOUT`** Allowing the SQS
   visibility timeout to be less than the Lambda timeout causes in-flight messages to become
-  visible again and be reprocessed *concurrently*. This results in a flood of duplicate same-slice writes.
+  visible again and be reprocessed *concurrently*. This results in duplicate same-slice writes.
   A settings validator guarantees `VISIBILITY_TIMEOUT ≥ LAMBDA_TIMEOUT` when deploying via CDK-managed.
   AWS best practice is ~6× the Lambda timeout for redrive headroom.
 - **Keep `MAX_CONCURRENCY` moderate (~50).** At 50 we saw ~10 transient auth errors over a
-  week of granules (self-healing). At **1000** the Earthdata auth endpoint was overwhelmed by ~1000
-  simultaneous cold-container credential fetches → widespread `UnauthenticatedError`. Since
+  week of granules. At **1000** the Earthdata auth endpoint was overwhelmed by ~1000
+  simultaneous cold-container credential fetches, causing a flood of `UnauthenticatedError`s. Since
   concurrency buys no throughput (commits serialize) and *aggravates* both auth load and
-  rebase churn, there's no reason to go high.
+  rebase churn, there's no reason to try to increase `MAX_CONCURRENCY`.
 - **Batch size is the throughput lever, capped by `LAMBDA_TIMEOUT`.** Bigger batches mean
   fewer serialized commits *and* fewer credential fetches per granule (one cached token
   amortized over the batch). The cap: `batch_size × per_granule_time` must finish within the
@@ -76,19 +83,19 @@ AWS **requires** a batching window ≥ 1 s once `SQS_BATCH_SIZE > 10`. The SQS B
 
 ## Measured numbers
 
-| Config (`MAX_CONCURRENCY` / `SQS_BATCH_SIZE`) | Lambda duration | Throughput | Notes |
-|---|---|---|---|
-| 50 / 25 | rough estimate of ~12 s/batch | 1 week (336 granules) processed in ~6 min | ~10 transient auth errors |
-| 50 / 100 | under timeout | 1 week in ~2 min; 1 month (~1,440) in ~10 min | DLQ 0 |
-| 50 / 100 | some timeouts | 5 years in ~7 hours | DLQ 1,131 |
-| 25 / 100 | 99th percentile ~3 minutes; 50th percentile ~1 minute | 1 year | DLQ 0 |
+| Config (`MAX_CONCURRENCY` / `SQS_BATCH_SIZE`) | Lambda duration                                       | Throughput                                    | Notes                     |
+| --------------------------------------------- | ----------------------------------------------------- | --------------------------------------------- | ------------------------- |
+| 50 / 25                                       | rough estimate of ~12 s/batch                         | 1 week (336 granules) processed in ~6 min     | ~10 transient auth errors |
+| 50 / 100                                      | under timeout                                         | 1 week in ~2 min; 1 month (~1,440) in ~10 min | DLQ 0                     |
+| 50 / 100                                      | some timeouts                                         | 5 years in ~7 hours                           | DLQ 1,131                 |
+| 25 / 100                                      | 99th percentile ~3 minutes; 50th percentile ~1 minute | 1 year                                        | DLQ 0                     |
 
-At `SQS_BATCH_SIZE=100`, processing time is well under the 300 second timeout. So batch size can grow substantially **without** raising the timeout or memory (`LAMBDA_MEMORY=4096`).
+Comments on final settings:
+* At `SQS_BATCH_SIZE=100`, processing time is well under the 300 second timeout. So batch
+size could still grow substantially **without** raising the timeout.
+* `LAMBDA_MEMORY=4096` could be safely decreased but not by a lot. Average memory use was ~2000MB, with max memory used 2609.
 
-Average memory use was ~2000MB, with max memory used 2609. So we could safely reduce memory to 3000 MB.
-
-This was determined by running the following query in CloudWatch Log Insights for the processing lambdas CloudWatch Logs:
-
+Lambda memory usage metrics were gathered by running the following query in CloudWatch Log Insights for the processing lambdas CloudWatch Logs:
 
 ```sql
 filter @type = "REPORT"
@@ -101,10 +108,10 @@ filter @type = "REPORT"
 
 ## Why performance at lower temporal ranges won't scale linearly
 
-Tests at relatively small scale (say a week or month) do not saturate resources as currently configured. Two effects only appear at scale:
+Tests at relatively small scale (say a week or month) did not saturate resources. Two effects only appear at scale:
 
-1. **Concurrency saturation.** When the number of batches is below `MAX_CONCURRENCY` there is idle capacity.
-2. **Shard fill.** As the shard fills from 0 → 17,520 refs commit duration is expected to increase. In practice, some increased duration has been observed but it does not appear significant.
+1. **Lambda concurrency saturation:** When the number of batches is below `MAX_CONCURRENCY` there is idle capacity.
+2. **Shard fill:** As the shard fills from 0 → 17,520 refs commit duration is expected to increase. In practice, some increased duration was observed but it did not appear significant.
 
 ## Dispatch script — `scripts/dispatch.py`
 
@@ -123,7 +130,7 @@ The dispatch script enumerates files and dispatches messages to SQS. There is no
 
 Example (used for the month-scale test, 28 days in ~10 min):
 
-```
+```sh
 python scripts/dispatch.py \
   --queue-url https://sqs.us-west-2.amazonaws.com/444055461661/gpmimerg-vz-dp-queue \
   --start 1998-03-25T23:30:00 --end 1999-03-26T00:00
@@ -133,7 +140,7 @@ python scripts/dispatch.py \
 
 A superficial way to validate all messages were processed is to check the dead-letter queue is empty. However, this isn't very reassuring on its own.
 
-The `validate_build.ipynb` notebook provides a more thorough validation, albeit not exhaustive. For a given temporal range, it performs:
+The `validate-build.ipynb` notebook provides a more thorough validation, albeit not exhaustive. For a given temporal range, it performs:
 
 1. **a completeness check** via per-chunk `store.exists(...)` — a metadata HEAD that directly
   answers whether each region write committed, and,
@@ -154,9 +161,8 @@ Two ways to redrive:
   *physically in the DLQ* back to the source queue. Zero code, simplest. **Sufficient when
   missing-timesteps==DLQ count** (no silent loss). Limited to what's in the DLQ, and subject
   to DLQ retention (messages age out).
-- **Notebook-driven redrive (UNTESTED)** (`validate_build.ipynb`, Section 3) — derives the missing set from
-  `store.exists(...)`, dedupes to unique time indices, and re-sends one SQS message per missing
-  timestep (same body as `dispatch.py`).
+- **Notebook-driven redrive (UNTESTED)** The `validate-build.ipynb` derives a missing set from
+  `store.exists(...)`. This could be deduped to unique time indices (see note above) and re-submitted to the SQS queue.
 
 Rule of thumb: if missing-timesteps == DLQ count, use the console (easier); if missing > DLQ,
-the queue isn't the source of truth — the store is — so redrive from the scan.
+the queue isn't the source of truth, the store is, so redrive from the scan.
