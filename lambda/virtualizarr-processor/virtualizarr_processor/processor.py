@@ -266,29 +266,12 @@ class Processor:
         base_backoff: float = 0.25,
         max_backoff: float = 5,
     ) -> str:
-        """Commit the batch's staged region writes, rebasing on conflict.
-
-        Many Lambdas commit to ``main`` concurrently. An Icechunk commit is a
-        compare-and-swap on the branch tip, so all but one of a set of racing
-        commits raises ``ConflictError``; we rebase onto the advanced tip and
-        retry. Backoff is jittered so a thundering herd of Lambdas spreads its
-        retries out instead of colliding again in lockstep.
-
-        Granules usually write *disjoint* ``time`` slices, but SQS is
-        at-least-once and the dispatch is resumable/redrivable, so the *same*
-        granule (hence the same ``time`` index and chunks) can be processed by
-        two batches concurrently. Two such commits racing produce a
-        ``ChunkDoubleUpdate`` conflict, which ``ConflictDetector`` only *detects*
-        (it would raise ``RebaseFailedError`` and abort). Because a duplicate
-        region write is byte-identical to the original, we resolve with
-        ``BasicConflictSolver(on_chunk_conflict=UseOurs)`` — "ours" and "theirs"
-        are the same bytes, so keeping ours is correct.
-
-        Anything ``UseOurs`` can't resolve (e.g. a structural / Zarr-metadata
-        conflict) raises ``RebaseFailedError``; retrying wouldn't help, so we log
-        the conflicting types/paths and propagate. On attempt exhaustion the
-        final ``ConflictError`` propagates too. Either way the caller fails the
-        batch and SQS redelivers it.
+        """
+        Commit the batch's staged region writes with the following failure handling:
+        1) Rebase on conflict.
+        2) Use a rebase conflict solver with a "UseOurs" rule to overwrite any existing
+        commits to the same chunk, since all region-writes should be idempotent.
+        3) If the commit still fails, retry with backoff + jitter.
         """
         for attempt in range(max_attempts):
             try:

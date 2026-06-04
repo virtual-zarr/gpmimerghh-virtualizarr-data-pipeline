@@ -87,10 +87,7 @@ def _default_s3_registry() -> ObjectStoreRegistry:
     Cached per process: reusing one ``S3Store`` lets obstore keep its temporary
     S3 credentials cached across granules, so the Earthdata ``s3credentials``
     endpoint is hit roughly once per credential lifetime per warm Lambda
-    container instead of once per granule. Building a fresh store (hence a fresh
-    obstore credential cache) for every granule produced bursts of token
-    requests that intermittently failed — surfacing as ``UnauthenticatedError``
-    from the credential-refresh HTTP call.
+    container instead of once per granule.
     """
     cp = _credential_provider()
     store = S3Store.from_url(STORE_PREFIX, credential_provider=cp)
