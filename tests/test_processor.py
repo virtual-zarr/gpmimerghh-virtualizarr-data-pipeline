@@ -85,7 +85,8 @@ def test_commit_reraises_after_exhausting_attempts() -> None:
 
 
 def test_commit_propagates_rebase_failure() -> None:
-    """A genuine (non-disjoint) conflict surfaces instead of retrying forever."""
+    """A conflict the chunk-level UseOurs solver can't resolve (e.g. a
+    structural/metadata conflict) surfaces immediately instead of retrying."""
     session = MagicMock(spec=Session)
     session.snapshot_id = "snap"
     session.commit.side_effect = _conflict()
