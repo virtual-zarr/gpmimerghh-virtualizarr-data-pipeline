@@ -250,6 +250,11 @@ class VirtualizarrSqsStack(Stack):
                 image_asset=self.gc_image_asset,
                 memory_mb=2000,
                 retry_attempts=1,
+                environment={
+                    "GARBAGE_COLLECTION_EXPIRY_HOURS": str(
+                        settings.GARBAGE_COLLECTION_EXPIRY_HOURS
+                    ),
+                },
             )
             self.icechunk_bucket.grant_read_write(self.gc_job.role)
 

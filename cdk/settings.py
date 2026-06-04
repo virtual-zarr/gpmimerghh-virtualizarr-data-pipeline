@@ -45,6 +45,9 @@ class StackSettings(BaseSettings):
 
     # Freguency in days to run garbage collection.
     GARBAGE_COLLECTION_FREQUENCY: int | None = None
+    # Age (in hours) of snapshots to expire when running garbage collection.
+    # Snapshots older than `now - GARBAGE_COLLECTION_EXPIRY_HOURS` are collected.
+    GARBAGE_COLLECTION_EXPIRY_HOURS: int = 3
 
     VPC_ID: str | None = None
     # AWS Batch cluster reference to SSM parameter describing the AMI _or_ the AMI ID
