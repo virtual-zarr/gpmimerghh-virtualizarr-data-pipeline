@@ -64,7 +64,7 @@ class VirtualizarrSqsStack(Stack):
             self,
             f"{settings.STACK_NAME}-Dlq",
             queue_name=f"{settings.STACK_NAME}-Dlq",
-            retention_period=Duration.days(4),
+            retention_period=Duration.days(14),
         )
 
         self.queue = sqs.Queue(
@@ -72,7 +72,7 @@ class VirtualizarrSqsStack(Stack):
             f"{settings.STACK_NAME}-queue",
             queue_name=f"{settings.STACK_NAME}-queue",
             visibility_timeout=Duration.seconds(settings.VISIBILITY_TIMEOUT),
-            retention_period=Duration.days(4),
+            retention_period=Duration.days(14),
             dead_letter_queue=sqs.DeadLetterQueue(
                 max_receive_count=20,
                 queue=self.dlq,

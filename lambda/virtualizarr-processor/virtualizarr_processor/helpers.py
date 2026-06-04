@@ -73,8 +73,14 @@ def url_for(t: datetime) -> str:
 def _credential_provider() -> NasaEarthdataCredentialProvider:
     """Build (and cache) the Earthdata credential provider.
 
-    Cached per process so every granule reuses one provider instead of
-    constructing a fresh one (each carrying its own ``requests.Session``).
+    Cached per process
+
+    _credential_provider is used by:
+    1. get_icechunk_creds (reading via icechunk): the method for refreshable credentials
+    for the virtual chunk credentials to setup the repository for reading from protected
+    virtual chunks.
+    2. _default_s3_registry (writing via VirtualiZarr, see function below): the method
+    for constructing a store registry with VirtualiZarr's open_virtual_dataset.
     """
     _load_earthdata_credentials()
     return NasaEarthdataCredentialProvider(CREDENTIALS_URL)
@@ -82,12 +88,12 @@ def _credential_provider() -> NasaEarthdataCredentialProvider:
 
 @lru_cache(maxsize=1)
 def _default_s3_registry() -> ObjectStoreRegistry:
-    """Build (and cache) the production GES DISC S3 registry.
+    """Build (and cache) the GES DISC S3 registry.
 
-    Cached per process: reusing one ``S3Store`` lets obstore keep its temporary
-    S3 credentials cached across granules, so the Earthdata ``s3credentials``
-    endpoint is hit roughly once per credential lifetime per warm Lambda
-    container instead of once per granule.
+    The registry is used by the open_virtual_dataset call so primarily used in
+    constructing (and writing) virtual datasets.
+    Let's the process_messages function cache the registry per process so the registry
+    can be re-used across granules and the credential endpoint is only hit once.
     """
     cp = _credential_provider()
     store = S3Store.from_url(STORE_PREFIX, credential_provider=cp)

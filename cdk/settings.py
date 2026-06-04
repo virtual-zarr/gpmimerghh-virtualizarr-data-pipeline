@@ -46,7 +46,8 @@ class StackSettings(BaseSettings):
     # Freguency in days to run garbage collection.
     GARBAGE_COLLECTION_FREQUENCY: int | None = None
     # Age (in hours) of snapshots to expire when running garbage collection.
-    # Snapshots older than `now - GARBAGE_COLLECTION_EXPIRY_HOURS` are collected.
+    # Snapshots older than `now - GARBAGE_COLLECTION_EXPIRY_HOURS` are garbage
+    # collected.
     GARBAGE_COLLECTION_EXPIRY_HOURS: int = 3
 
     VPC_ID: str | None = None

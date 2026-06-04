@@ -1,6 +1,6 @@
 # Scale the GPM IMERG HH virtual Icechunk build
 
-This document records what we built to scale to 28 years of half-hourly data, why, and what we learned tuning it.
+This document records what was built to scale to 28 years of half-hourly data, why, and what was learned tuning it.
 
 The pipeline, documented in `design.md`, writes virtual references for **486,480
 granules** (files produced every 30 minutes from 1998-01-01 to 2025-10-01) into one Icechunk store.
@@ -21,7 +21,7 @@ There are 2 consequences of this:
 
 The manifest is split **~1 year per shard** (`open_or_create_repo` uses
 `manifest_split_size = 48 * 365 = 17,520`). This matters for scaling: each commit rewrites
-the shard(s) its batch touched, so a shard's rewrite cost grows as the shard grows.
+the shard(s) its batch touches, so a shard's rewrite cost grows as the shard grows.
 
 ## What we changed (and why)
 
@@ -32,30 +32,23 @@ While scaling, the following changes were made:
 The original bare `session.commit()` meant any concurrent commit conflict failed the whole
 batch, resulting in SQS redelivery.
 
-2 changes were made to prevent SQS redeliver:
+2 changes were made to prevent SQS redelivery during `commit_processed_files`:
 
-Frist, **the commit_processed_files includes a conflict solver that *resolves*, rather than just *detects* conflicts.** `ConflictDetector` always raises `RebaseFailedError`
-("Snapshot cannot be rebased. Aborting rebase"). We instead use:
+1. A bounded, jittered-backoff retry loop will retry any  `ConflictError` errors. When lambdas are creating sessions and committing around the same time, it can cause an "Failed to commit, expected parent: XXX, actual parent YYY" type error. When this happens, the commit is retried up to `max_attempts` with backoff and jitter. The wait between attempts grows exponentially up to `max_backoff`.
+2. If a conflict error is raised, the function will catch and retry immediately by rebasing the session with a `BasicConflictSolver` that *resolves* conflicts if the conflict is a *chunk conflict*.
 
-```python
-session.rebase(icechunk.BasicConflictSolver(
-    on_chunk_conflict=icechunk.VersionSelection.UseOurs
-))
-```
-
-We don't expect to encounter a chunk conflict error except in a race condition. The pipeline is designed to only be writing disjoint slices. However, there is a chance that the same message for the same granule is being processed by 2 lambdas at once. This is because SQS guarantees deliver "at least once", so it could redeliver. Further, if messages could be redelivered if the SQS visibility timeout is less than the Lambda timeout (although this is prevented with a validation step in the CDK code, manual changes could happen). A race condition where the same granule is being processed by 2 concurrent lambdas could result in a `ChunkDoubleUpdate` error. The writes should be identical, so it is safe to use the `UseOurs` rule when this race condistion happens.
-
-Second, a bounded, jittered-backoff retry loop will retry any  `ConflictError` errors. When lambdas are creating sessions and committing around the same time, it can cause an "Failed to commit, expected parent: XXX, actual parent YYY" type error. When this happens, the commit is retried up to `max_attempts` with backoff and jitter parameters. The first attempt happens quickly, and the wait between attempts grows exponentially up to `max_backoff`.
+>[!Note]
+> We don't expect to encounter a chunk conflict error except in a race condition. The pipeline is designed to only be writing disjoint slices. However, there is a chance the same message for the same granule is being processed by 2 lambdas at once. This is because SQS guarantees deliver "at least once", so it could redeliver. Further, messages could be redelivered if the SQS visibility timeout is less than the Lambda timeout. This situation is prevented in code by a validation step in the CDK code, however manual changes could happen. A race condition where the same granule is being processed by 2 concurrent lambdas could result in a `ChunkDoubleUpdate` error. The writes should be identical, so it is safe to use the `UseOurs` rule when this race condition happens.
 
 ### 2. Cache the Earthdata credential provider — `helpers.py`
 
 Request bursts intermittently fail with `UnauthenticatedError` (surfaced as a
-wrapped `SystemError` crossing the Rust/Python boundary). We memoize both with
+wrapped `SystemError`). We memoize both the credential provider and the S3Store registry
 `@lru_cache(maxsize=1)`, so one provider + store are reused across the whole batch in a warm
 container, hitting the endpoint roughly once per credential lifetime.
 
 **Caveat that bounds concurrency:** the cache is *per process*. It does nothing across
-containers, so the auth-endpoint load scales with `MAX_CONCURRENCY`, not with how many
+containers, so the auth endpoint load scales with `MAX_CONCURRENCY`, not with how many
 granules each container reads.
 
 ### 3. Added more configurable scaling settings in `cdk/`
