@@ -1,5 +1,7 @@
 import os
+import random
 import tempfile
+import time
 from datetime import datetime, timedelta
 from itertools import islice
 
@@ -72,7 +74,7 @@ class Processor:
     region: str
     prefix: str
     bucket: str | None
-    storage: icechunk.Storage | None
+    storage: icechunk.Storage
 
     def __init__(
         self,
@@ -256,9 +258,42 @@ class Processor:
         )
         return True
 
-    def commit_processed_files(self, session: Session) -> str:
-        snapshot = session.commit(message=f"Append to {session.snapshot_id}")
-        return str(snapshot)
+    def commit_processed_files(
+        self,
+        session: Session,
+        *,
+        max_attempts: int = 20,
+        base_backoff: float = 0.25,
+        max_backoff: float = 5,
+    ) -> str:
+        """
+        Commit the batch's staged region writes with the following failure handling:
+        1) Rebase on conflict.
+        2) Use a rebase conflict solver with a "UseOurs" rule to overwrite any existing
+        commits to the same chunk, since all region-writes should be idempotent.
+        3) If the commit still fails, retry with backoff + jitter.
+        """
+        for attempt in range(max_attempts):
+            try:
+                return str(session.commit(message=f"Append to {session.snapshot_id}"))
+            except icechunk.ConflictError:
+                if attempt == max_attempts - 1:
+                    raise
+                try:
+                    session.rebase(
+                        icechunk.BasicConflictSolver(
+                            on_chunk_conflict=icechunk.VersionSelection.UseOurs
+                        )
+                    )
+                except icechunk.RebaseFailedError as exc:
+                    conflicts = ", ".join(
+                        f"{c.conflict_type} at {c.path}" for c in exc.conflicts
+                    )
+                    print(f"Rebase failed on unresolvable conflicts: {conflicts}")
+                    raise
+                backoff = min(base_backoff * 2**attempt, max_backoff)
+                time.sleep(backoff * (0.5 + random.random()))
+        raise RuntimeError("commit retry loop exited without returning")  # unreachable
 
     def garbage_collect(
         self, expiry_time: datetime, repo: icechunk.Repository

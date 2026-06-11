@@ -107,8 +107,8 @@ def handler(event: Any, context: LambdaContext) -> PartialItemFailureResponse:
     try:
         snapshot_id = virtualizarr_processor.commit_processed_files(session=session)
         logger.info(f"Committed to {snapshot_id}")
-    except Exception:
-        logger.error("Commit failed, marking all records as failed")
+    except Exception as e:
+        logger.error(f"Commit failed with error: {e}. Marking all records as failed")
         return {
             "batchItemFailures": [
                 {"itemIdentifier": record["messageId"]} for record in records

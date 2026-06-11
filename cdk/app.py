@@ -1,6 +1,6 @@
 from aws_cdk import App, Tags
-from settings import StackSettings
-from stack import VirtualizarrSqsStack
+from settings import StackSettings  # type: ignore[import-not-found]
+from stack import VirtualizarrSqsStack  # type: ignore[import-not-found]
 
 settings = StackSettings()
 

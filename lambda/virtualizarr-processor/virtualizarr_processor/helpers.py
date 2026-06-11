@@ -1,6 +1,7 @@
 import json
 import os
 from datetime import datetime, timedelta
+from functools import lru_cache
 from typing import Dict
 
 import boto3
@@ -64,16 +65,36 @@ def url_for(t: datetime) -> str:
         + end.strftime("%H%M%S")
         + f".{minutes_since:04d}.V07B.HDF5"
     )
+    # STORE_PREFIX already ends in "/", so no separator before the year.
     return f"{STORE_PREFIX}{t.year:04d}/{t.strftime('%j')}/{name}"
 
 
+@lru_cache(maxsize=1)
 def _credential_provider() -> NasaEarthdataCredentialProvider:
+    """Build (and cache) the Earthdata credential provider.
+
+    Cached per process
+
+    _credential_provider is used by:
+    1. get_icechunk_creds (reading via icechunk): the method for refreshable credentials
+    for the virtual chunk credentials to setup the repository for reading from protected
+    virtual chunks.
+    2. _default_s3_registry (writing via VirtualiZarr, see function below): the method
+    for constructing a store registry with VirtualiZarr's open_virtual_dataset.
+    """
     _load_earthdata_credentials()
     return NasaEarthdataCredentialProvider(CREDENTIALS_URL)
 
 
-def _default_s3_registry(data_url: str) -> ObjectStoreRegistry:
-    """Build the production GES DISC S3 registry for ``data_url``."""
+@lru_cache(maxsize=1)
+def _default_s3_registry() -> ObjectStoreRegistry:
+    """Build (and cache) the GES DISC S3 registry.
+
+    The registry is used by the open_virtual_dataset call so primarily used in
+    constructing (and writing) virtual datasets.
+    Let's the process_messages function cache the registry per process so the registry
+    can be re-used across granules and the credential endpoint is only hit once.
+    """
     cp = _credential_provider()
     store = S3Store.from_url(STORE_PREFIX, credential_provider=cp)
     return ObjectStoreRegistry({f"s3://{BUCKET}": store})
@@ -95,7 +116,7 @@ def _open_vds(
     fixture file without touching S3.
     """
     if registry is None:
-        registry = _default_s3_registry(data_url)
+        registry = _default_s3_registry()
     parser = HDFParser(group="Grid", drop_variables=drop_variables)
     return open_virtual_dataset(
         url=data_url,
