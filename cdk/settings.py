@@ -1,6 +1,7 @@
 import os
 from typing import Any, Literal
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings
 
 print("STAGE from env:", os.getenv("STAGE"))
@@ -25,12 +26,29 @@ class StackSettings(BaseSettings):
     DATA_BUCKET_NAME: str | None = None
     PROJECT: str = "virtualizarr-data-pipelines"
     SNS_TOPIC: str | None = None
-    MAX_CONCURRENCY: int = 50
-    SQS_BATCH_SIZE: int = 10
-    EARTHDATA_SECRET_ARN: str = None
+    MAX_CONCURRENCY: int = 25
+    SQS_BATCH_SIZE: int = 100
+    # SQS -> Lambda batching window (seconds). AWS requires this to be >= 1
+    # when SQS_BATCH_SIZE > 10; with a window the poller waits up to this long
+    # to fill a larger batch before invoking. Harmless for batch sizes <= 10.
+    SQS_MAX_BATCHING_WINDOW: int = 5
+    EARTHDATA_SECRET_ARN: str | None = None
+
+    # process_messages Lambda tuning. Raise LAMBDA_TIMEOUT toward 900 (the
+    # Lambda max) to fit larger SQS_BATCH_SIZE values; commits serialize on
+    # main, so bigger batches (fewer commits) scale better than more concurrency.
+    LAMBDA_TIMEOUT: int = 300
+    LAMBDA_MEMORY: int = 4096
+    # SQS visibility timeout. Must be >= LAMBDA_TIMEOUT so a record isn't
+    # redelivered while its batch is still being processed.
+    VISIBILITY_TIMEOUT: int = 360
 
     # Freguency in days to run garbage collection.
     GARBAGE_COLLECTION_FREQUENCY: int | None = None
+    # Age (in hours) of snapshots to expire when running garbage collection.
+    # Snapshots older than `now - GARBAGE_COLLECTION_EXPIRY_HOURS` are garbage
+    # collected.
+    GARBAGE_COLLECTION_EXPIRY_HOURS: int = 3
 
     VPC_ID: str | None = None
     # AWS Batch cluster reference to SSM parameter describing the AMI _or_ the AMI ID
@@ -42,3 +60,21 @@ class StackSettings(BaseSettings):
 
     # Cluster scaling max
     BATCH_MAX_VCPU: int = 10
+
+    @model_validator(mode="after")
+    def _check_visibility_timeout(self) -> "StackSettings":
+        if self.VISIBILITY_TIMEOUT < self.LAMBDA_TIMEOUT:
+            raise ValueError(
+                f"VISIBILITY_TIMEOUT ({self.VISIBILITY_TIMEOUT}s) must be >= "
+                f"LAMBDA_TIMEOUT ({self.LAMBDA_TIMEOUT}s)"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _check_batching_window(self) -> "StackSettings":
+        if self.SQS_BATCH_SIZE > 10 and self.SQS_MAX_BATCHING_WINDOW < 1:
+            raise ValueError(
+                f"SQS_MAX_BATCHING_WINDOW ({self.SQS_MAX_BATCHING_WINDOW}s) must be "
+                f">= 1 when SQS_BATCH_SIZE ({self.SQS_BATCH_SIZE}) > 10"
+            )
+        return self

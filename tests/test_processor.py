@@ -1,8 +1,10 @@
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import icechunk
 import numpy as np
+import pytest
 from icechunk import Repository, Session
 from obspec_utils.registry import ObjectStoreRegistry
 from virtualizarr_processor import helpers
@@ -10,13 +12,20 @@ from virtualizarr_processor.processor import Processor
 from virtualizarr_processor.typing import VirtualizarrProcessor
 
 
-def protocol_type_check(processor: VirtualizarrProcessor) -> None:
-    assert processor
+def _conflict() -> icechunk.ConflictError:
+    return icechunk.ConflictError("expected", "actual")
+
+
+def _accepts_protocol(_: VirtualizarrProcessor) -> None:
+    """
+    Static-check helper: type-checkers verify the argument conforms to the protocol.
+    """
 
 
 def test_follows_protocol() -> None:
     processor = Processor()
-    protocol_type_check(processor=processor)
+    _accepts_protocol(processor)
+    assert isinstance(processor, VirtualizarrProcessor)
 
 
 def test_initialize_repo(initialized_repo: icechunk.Repository) -> None:
@@ -44,6 +53,49 @@ def test_commit_processed_files(icechunk_session: Session) -> None:
     processor = Processor()
     snapshot = processor.commit_processed_files(session=icechunk_session)
     assert isinstance(snapshot, str)
+
+
+def test_commit_retries_then_succeeds_after_rebase() -> None:
+    """A racing commit conflicts, rebases, and succeeds on the next attempt."""
+    session = MagicMock(spec=Session)
+    session.snapshot_id = "snap"
+    session.commit.side_effect = [_conflict(), _conflict(), "snap-final"]
+
+    snapshot = Processor().commit_processed_files(session, base_backoff=0.0)
+
+    assert snapshot == "snap-final"
+    assert session.commit.call_count == 3
+    assert session.rebase.call_count == 2  # one rebase before each retry
+    solver = session.rebase.call_args.args[0]
+    # Resolve byte-identical duplicate-chunk writes rather than only detecting them.
+    assert isinstance(solver, icechunk.BasicConflictSolver)
+
+
+def test_commit_reraises_after_exhausting_attempts() -> None:
+    """Persistent conflicts exhaust the budget and re-raise so SQS redelivers."""
+    session = MagicMock(spec=Session)
+    session.snapshot_id = "snap"
+    session.commit.side_effect = _conflict()
+
+    with pytest.raises(icechunk.ConflictError):
+        Processor().commit_processed_files(session, max_attempts=3, base_backoff=0.0)
+
+    assert session.commit.call_count == 3
+    assert session.rebase.call_count == 2  # no rebase after the final failed commit
+
+
+def test_commit_propagates_rebase_failure() -> None:
+    """A conflict the chunk-level UseOurs solver can't resolve (e.g. a
+    structural/metadata conflict) surfaces immediately instead of retrying."""
+    session = MagicMock(spec=Session)
+    session.snapshot_id = "snap"
+    session.commit.side_effect = _conflict()
+    session.rebase.side_effect = icechunk.RebaseFailedError("snap", [])
+
+    with pytest.raises(icechunk.RebaseFailedError):
+        Processor().commit_processed_files(session, base_backoff=0.0)
+
+    assert session.commit.call_count == 1  # stop at the first unresolved rebase
 
 
 def test_garbage_collect(initialized_repo: icechunk.Repository) -> None:

@@ -1394,6 +1394,7 @@ dependencies = [
     { name = "h5py" },
     { name = "icechunk" },
     { name = "obspec-utils" },
+    { name = "requests" },
     { name = "virtualizarr", extra = ["hdf"] },
 ]
 
@@ -1404,6 +1405,7 @@ requires-dist = [
     { name = "h5py" },
     { name = "icechunk", specifier = ">=2.0.5" },
     { name = "obspec-utils" },
+    { name = "requests" },
     { name = "virtualizarr", extras = ["hdf"], git = "https://github.com/zarr-developers/virtualizarr.git?rev=fix%2Fproblem_fillvalues" },
 ]
 
