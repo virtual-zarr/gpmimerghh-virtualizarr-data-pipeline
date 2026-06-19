@@ -70,14 +70,16 @@ class VirtualizarrProcessor(Protocol):
         """
         ...
 
-    def garbage_collect(self, expiry_time: datetime) -> icechunk.GCSummary:
+    def garbage_collect(
+        self, expiry_time: datetime, repo: Repository
+    ) -> icechunk.GCSummary:
         """
         Run Icechunk garbage collection and snapshot removal.
 
         Parameters
         ----------
-            repo: And Icechunk Repository.
             expiry_time: Remove snapshots older than this time.
+            repo: An Icechunk Repository.
         Returns
         -------
         GCSummary

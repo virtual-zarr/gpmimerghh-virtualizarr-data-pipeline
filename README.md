@@ -55,6 +55,51 @@ EARTHDATA_SECRET_ARN=arn:aws:secretsmanager:<region>:<account-id>:secret:<your-s
 
 The Lambda functions fetch the secret and set the credentials as environment variables for the Earthdata S3 credential provider.
 
+#### Icechunk bucket settings
+There are two bucket-related settings that control where the Icechunk store is written:
+
+- **`ICECHUNK_BUCKET_NAME`** — the name of a new S3 bucket CDK will create for the store (default: `icechunk-outuput`).
+- **`ICECHUNK_BUCKET`** — the name of an **existing** S3 bucket to use instead. When this is set, CDK will reference the bucket rather than create it.
+
+If you already have a bucket (e.g. `nasa-eodc-public`), set `ICECHUNK_BUCKET=nasa-eodc-public` in your `.env` file to avoid the `already exists` error on deploy.
+
+You can also set `ICECHUNK_PREFIX` for any additional path to the icechunk store.
+
+### Project commands :hammer:
+#### To set up the development environment
+
+```sh
+./scripts/setup.sh
+```
+
+#### Run unit tests
+
+```sh
+uv run pytest
+```
+
+Unit tests run against local fixtures and require no AWS access.
+
+#### Run integration tests
+
+Integration tests hit real S3 buckets and require valid AWS credentials and the
+`ICECHUNK_BUCKET` / `ICECHUNK_PREFIX` environment variables to be set:
+
+```
+# set AWS credentials in your environment
+uv run pytest -m integration
+```
+
+#### Review your infrastructure before deploying
+
+```
+uv run --env-file .env.sample cdk synth
+```
+EARTHDATA_SECRET_ARN=arn:aws:secretsmanager:<region>:<account-id>:secret:<your-stack-name>/earthdata-credentials-<suffix>
+```
+
+The Lambda functions fetch the secret and set the credentials as environment variables for the Earthdata S3 credential provider.
+
 ### Create the .env file for other custom settings
 
 ```bash

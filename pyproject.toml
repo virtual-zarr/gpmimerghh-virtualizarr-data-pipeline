@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Virtualizarr/Icechunk ingestion infrastructure"
 authors = [{name = "Sean Harkins", email = "sean@developmentseed.org"}]
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 dependencies = [
     "aws-cdk-lib",
     "constructs>=10.0.0",
@@ -51,6 +51,15 @@ warn_unused_configs = true
 disallow_untyped_defs = true
 explicit_package_bases = true
 files = ["lambda", "cdk"]
+exclude = ["cdk\\.out/"]
+
+[[tool.mypy.overrides]]
+module = "icechunk.*"
+follow_imports = "skip"
 
 [tool.pytest.ini_options]
-pythonpath = ["lambda"]
+pythonpath = ["lambda", "scripts"]
+addopts = "-m 'not integration'"
+markers = [
+    "integration: tests that require real AWS credentials and bucket access",
+]

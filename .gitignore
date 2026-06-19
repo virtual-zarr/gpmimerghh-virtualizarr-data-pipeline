@@ -27,6 +27,8 @@ share/python-wheels/
 .installed.cfg
 *.egg
 MANIFEST
+package-lock.json
+node_modules/
 
 # PyInstaller
 #  Usually these files are written by a python script from a template
@@ -221,3 +223,5 @@ __marimo__/
 #/target
 
 /cdk.out
+cdk.context.json
+.dispatch_checkpoint
