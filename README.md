@@ -92,10 +92,9 @@ uv run pytest -m integration
 
 #### Review your infrastructure before deploying
 
-```
-uv run --env-file .env.sample cdk synth
-```
+```bash
 EARTHDATA_SECRET_ARN=arn:aws:secretsmanager:<region>:<account-id>:secret:<your-stack-name>/earthdata-credentials-<suffix>
+uv run --env-file .env.sample cdk synth
 ```
 
 The Lambda functions fetch the secret and set the credentials as environment variables for the Earthdata S3 credential provider.
