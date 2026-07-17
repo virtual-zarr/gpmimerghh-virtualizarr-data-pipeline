@@ -93,7 +93,6 @@ uv run pytest -m integration
 #### Review your infrastructure before deploying
 
 ```bash
-EARTHDATA_SECRET_ARN=arn:aws:secretsmanager:<region>:<account-id>:secret:<your-stack-name>/earthdata-credentials-<suffix>
 uv run --env-file .env.sample cdk synth
 ```
 
